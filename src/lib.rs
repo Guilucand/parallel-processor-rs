@@ -1,8 +1,6 @@
-#![feature(is_sorted, int_log, trait_alias)]
-#![feature(drain_filter)]
+#![feature(int_log)]
 #![cfg_attr(test, feature(type_alias_impl_trait))]
-// #![feature(core_intrinsics)]
-// #![deny(warnings)]
+#![deny(warnings)]
 
 #[macro_use]
 pub extern crate mt_debug_counters;
