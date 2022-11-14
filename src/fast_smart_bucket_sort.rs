@@ -56,6 +56,27 @@ impl<const LEN: usize> BucketItem for SortedData<LEN> {
     }
 }
 
+pub trait FastSortable: Ord {
+    fn get_shifted(&self, rhs: u8) -> u8;
+}
+
+macro_rules! fast_sortable_impl {
+    ($int_type:ty) => {
+        impl FastSortable for $int_type {
+            #[inline(always)]
+            fn get_shifted(&self, rhs: u8) -> u8 {
+                (*self >> rhs) as u8
+            }
+        }
+    };
+}
+
+fast_sortable_impl!(u8);
+fast_sortable_impl!(u16);
+fast_sortable_impl!(u32);
+fast_sortable_impl!(u64);
+fast_sortable_impl!(u128);
+
 pub trait SortKey<T> {
     type KeyType: Ord;
     const KEY_BITS: usize;
@@ -189,6 +210,12 @@ pub fn striped_parallel_smart_radix_sort<T: Ord + Send + Sync + Debug, F: SortKe
 }
 
 pub fn fast_smart_radix_sort<T: Sync + Send, F: SortKey<T>, const PARALLEL: bool>(data: &mut [T]) {
+    smart_radix_sort_::<T, F, PARALLEL, false>(data, F::KEY_BITS as u8 - RADIX_SIZE_LOG);
+}
+
+pub fn fast_smart_radix_sort_by_value<T: Sync + Send, F: SortKey<T>, const PARALLEL: bool>(
+    data: &mut [T],
+) {
     smart_radix_sort_::<T, F, PARALLEL, false>(data, F::KEY_BITS as u8 - RADIX_SIZE_LOG);
 }
 
