@@ -1,4 +1,3 @@
-#![feature(int_log)]
 #![cfg_attr(test, feature(type_alias_impl_trait))]
 #![deny(warnings)]
 
