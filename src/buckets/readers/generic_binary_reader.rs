@@ -1,4 +1,4 @@
-use crate::buckets::bucket_writer::BucketItem;
+use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::readers::BucketReader;
 use crate::buckets::writers::{BucketCheckpoints, BucketHeader};
 use crate::memory_fs::file::reader::FileReader;
@@ -171,12 +171,12 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
     }
 
     pub fn decode_bucket_items_parallel<
-        E: BucketItem,
-        F: for<'a> FnMut(E::ReadType<'a>, &mut E::ExtraDataBuffer),
+        S: BucketItemSerializer,
+        F: for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer),
     >(
         &self,
-        mut buffer: E::ReadBuffer,
-        mut extra_buffer: E::ExtraDataBuffer,
+        mut buffer: S::ReadBuffer,
+        mut extra_buffer: S::ExtraDataBuffer,
         mut func: F,
     ) -> bool {
         let mut stream = match self.get_read_parallel_stream() {
@@ -184,7 +184,8 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
             Some(stream) => stream,
         };
 
-        while let Some(el) = E::read_from(&mut stream, &mut buffer, &mut extra_buffer) {
+        let mut deserializer = S::new();
+        while let Some(el) = deserializer.read_from(&mut stream, &mut buffer, &mut extra_buffer) {
             func(el, &mut extra_buffer);
         }
         return true;
@@ -193,17 +194,18 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
 
 impl<D: ChunkDecoder> BucketReader for GenericChunkedBinaryReader<D> {
     fn decode_all_bucket_items<
-        E: BucketItem,
-        F: for<'a> FnMut(E::ReadType<'a>, &mut E::ExtraDataBuffer),
+        S: BucketItemSerializer,
+        F: for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer),
     >(
         mut self,
-        mut buffer: E::ReadBuffer,
-        extra_buffer: &mut E::ExtraDataBuffer,
+        mut buffer: S::ReadBuffer,
+        extra_buffer: &mut S::ExtraDataBuffer,
         mut func: F,
     ) {
         let mut stream = self.get_single_stream();
 
-        while let Some(el) = E::read_from(&mut stream, &mut buffer, extra_buffer) {
+        let mut deserializer = S::new();
+        while let Some(el) = deserializer.read_from(&mut stream, &mut buffer, extra_buffer) {
             func(el, extra_buffer);
         }
     }

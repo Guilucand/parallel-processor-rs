@@ -1,15 +1,16 @@
-use crate::buckets::bucket_writer::BucketItem;
+use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::{LockFreeBucket, MultiThreadBuckets};
 use crate::memory_data_size::MemoryDataSize;
 use std::path::PathBuf;
 
-pub struct SingleBucketThreadDispatcher<'a, B: LockFreeBucket> {
+pub struct SingleBucketThreadDispatcher<'a, B: LockFreeBucket, S: BucketItemSerializer> {
     buckets: &'a MultiThreadBuckets<B>,
     bucket_index: u16,
     buffer: Vec<u8>,
+    serializer: S,
 }
 
-impl<'a, B: LockFreeBucket> SingleBucketThreadDispatcher<'a, B> {
+impl<'a, B: LockFreeBucket, S: BucketItemSerializer> SingleBucketThreadDispatcher<'a, B, S> {
     pub fn new(
         buffer_size: MemoryDataSize,
         bucket_index: u16,
@@ -21,6 +22,7 @@ impl<'a, B: LockFreeBucket> SingleBucketThreadDispatcher<'a, B> {
             buckets,
             bucket_index,
             buffer,
+            serializer: S::new(),
         }
     }
 
@@ -41,30 +43,35 @@ impl<'a, B: LockFreeBucket> SingleBucketThreadDispatcher<'a, B> {
         self.buffer.clear();
     }
 
-    pub fn add_element_extended<T: BucketItem + ?Sized>(
+    pub fn add_element_extended(
         &mut self,
-        extra_data: &T::ExtraData,
-        extra_buffer: &T::ExtraDataBuffer,
-        element: &T,
+        extra_data: &S::ExtraData,
+        extra_buffer: &S::ExtraDataBuffer,
+        element: &S::InputElementType<'_>,
     ) {
-        if element.get_size(extra_data) + self.buffer.len() > self.buffer.capacity() {
+        if self.serializer.get_size(element, extra_data) + self.buffer.len()
+            > self.buffer.capacity()
+        {
             self.flush_buffer();
+            self.serializer.reset();
         }
-        element.write_to(&mut self.buffer, extra_data, extra_buffer);
+        self.serializer
+            .write_to(element, &mut self.buffer, extra_data, extra_buffer);
     }
 
-    pub fn add_element<T: BucketItem<ExtraDataBuffer = ()> + ?Sized>(
-        &mut self,
-        extra_data: &T::ExtraData,
-        element: &T,
-    ) {
+    pub fn add_element(&mut self, extra_data: &S::ExtraData, element: &S::InputElementType<'_>)
+    where
+        S: BucketItemSerializer<ExtraDataBuffer = ()>,
+    {
         self.add_element_extended(extra_data, &(), element);
     }
 
     pub fn finalize(self) {}
 }
 
-impl<'a, B: LockFreeBucket> Drop for SingleBucketThreadDispatcher<'a, B> {
+impl<'a, B: LockFreeBucket, S: BucketItemSerializer> Drop
+    for SingleBucketThreadDispatcher<'a, B, S>
+{
     fn drop(&mut self) {
         self.flush_buffer();
     }

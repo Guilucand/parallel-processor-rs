@@ -1,4 +1,4 @@
-use crate::buckets::bucket_writer::BucketItem;
+use crate::buckets::bucket_writer::BucketItemSerializer;
 use rand::{thread_rng, RngCore};
 use rayon::prelude::*;
 use std::cell::UnsafeCell;
@@ -6,13 +6,13 @@ use std::cmp::min;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::io::{Read, Write};
-use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::slice::from_raw_parts_mut;
 use std::sync::atomic::AtomicUsize;
 use unchecked_index::{unchecked_index, UncheckedIndex};
 
 type IndexType = usize;
 
-#[repr(packed)]
+// #[repr(packed)]
 #[derive(Eq, PartialOrd, PartialEq, Ord, Copy, Clone, Debug)]
 pub struct SortedData<const LEN: usize> {
     pub data: [u8; LEN],
@@ -25,33 +25,46 @@ impl<const LEN: usize> SortedData<LEN> {
     }
 }
 
-impl<const LEN: usize> BucketItem for SortedData<LEN> {
+pub struct SortedDataSerializer<const LEN: usize>;
+impl<const LEN: usize> BucketItemSerializer for SortedDataSerializer<LEN> {
+    type InputElementType<'a> = SortedData<LEN>;
     type ExtraData = ();
     type ExtraDataBuffer = ();
-    type ReadBuffer = Self;
-    type ReadType<'a> = &'a Self;
+    type ReadBuffer = SortedData<LEN>;
+    type ReadType<'a> = &'a SortedData<LEN>;
 
     #[inline(always)]
-    fn write_to(&self, bucket: &mut Vec<u8>, _: &Self::ExtraData, _: &Self::ExtraDataBuffer) {
-        bucket
-            .write(unsafe { from_raw_parts(self as *const Self as *const u8, LEN) })
-            .unwrap();
+    fn new() -> Self {
+        Self
+    }
+
+    #[inline(always)]
+    fn reset(&mut self) {}
+
+    #[inline(always)]
+    fn write_to(
+        &mut self,
+        element: &Self::InputElementType<'_>,
+        bucket: &mut Vec<u8>,
+        _: &Self::ExtraData,
+        _: &Self::ExtraDataBuffer,
+    ) {
+        bucket.write(element.data.as_slice()).unwrap();
     }
 
     #[inline(always)]
     fn read_from<'a, S: Read>(
+        &mut self,
         mut stream: S,
         read_buffer: &'a mut Self::ReadBuffer,
         _: &mut Self::ExtraDataBuffer,
     ) -> Option<Self::ReadType<'a>> {
-        stream
-            .read(unsafe { from_raw_parts_mut(read_buffer as *mut Self as *mut u8, LEN) })
-            .ok()?;
+        stream.read(read_buffer.data.as_mut_slice()).ok()?;
         Some(read_buffer)
     }
 
     #[inline(always)]
-    fn get_size(&self, _: &()) -> usize {
+    fn get_size(&self, _: &Self::InputElementType<'_>, _: &()) -> usize {
         LEN
     }
 }

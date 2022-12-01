@@ -1,4 +1,4 @@
-use crate::buckets::bucket_writer::BucketItem;
+use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::{LockFreeBucket, MultiThreadBuckets};
 use crate::memory_data_size::MemoryDataSize;
 use crate::utils::panic_on_drop::PanicOnDrop;
@@ -22,50 +22,53 @@ impl BucketsThreadBuffer {
     }
 }
 
-pub struct BucketsThreadDispatcher<B: LockFreeBucket> {
+pub struct BucketsThreadDispatcher<B: LockFreeBucket, S: BucketItemSerializer> {
     mtb: Arc<MultiThreadBuckets<B>>,
     thread_data: BucketsThreadBuffer,
     drop_panic: PanicOnDrop,
+    serializer: S,
 }
 
-impl<B: LockFreeBucket> BucketsThreadDispatcher<B> {
-    pub fn new(
-        mtb: &Arc<MultiThreadBuckets<B>>,
-        thread_data: BucketsThreadBuffer,
-    ) -> BucketsThreadDispatcher<B> {
+impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
+    pub fn new(mtb: &Arc<MultiThreadBuckets<B>>, thread_data: BucketsThreadBuffer) -> Self {
         assert_eq!(mtb.buckets.len(), thread_data.buffers.len());
         Self {
             mtb: mtb.clone(),
             thread_data,
             drop_panic: PanicOnDrop::new("buckets thread dispatcher not finalized"),
+            serializer: S::new(),
         }
     }
 
     #[inline]
-    pub fn add_element_extended<T: BucketItem + ?Sized>(
+    pub fn add_element_extended(
         &mut self,
         bucket: u16,
-        extra_data: &T::ExtraData,
-        extra_data_buffer: &T::ExtraDataBuffer,
-        element: &T,
+        extra_data: &S::ExtraData,
+        extra_data_buffer: &S::ExtraDataBuffer,
+        element: &S::InputElementType<'_>,
     ) {
         let bucket_buf = &mut self.thread_data.buffers[bucket as usize];
-        if element.get_size(extra_data) + bucket_buf.len() > bucket_buf.capacity()
+        if self.serializer.get_size(element, extra_data) + bucket_buf.len() > bucket_buf.capacity()
             && bucket_buf.len() > 0
         {
             self.mtb.add_data(bucket, bucket_buf.as_slice());
             bucket_buf.clear();
+            self.serializer.reset();
         }
-        element.write_to(bucket_buf, extra_data, extra_data_buffer);
+        self.serializer
+            .write_to(element, bucket_buf, extra_data, extra_data_buffer);
     }
 
     #[inline]
-    pub fn add_element<T: BucketItem<ExtraDataBuffer = ()> + ?Sized>(
+    pub fn add_element(
         &mut self,
         bucket: u16,
-        extra_data: &T::ExtraData,
-        element: &T,
-    ) {
+        extra_data: &S::ExtraData,
+        element: &S::InputElementType<'_>,
+    ) where
+        S: BucketItemSerializer<ExtraDataBuffer = ()>,
+    {
         self.add_element_extended(bucket, extra_data, &(), element);
     }
 

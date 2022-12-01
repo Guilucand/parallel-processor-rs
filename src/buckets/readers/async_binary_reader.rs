@@ -1,4 +1,4 @@
-use crate::buckets::bucket_writer::BucketItem;
+use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::readers::compressed_binary_reader::CompressedBinaryReader;
 use crate::buckets::readers::lock_free_binary_reader::LockFreeBinaryReader;
 use crate::memory_fs::RemoveFileMode;
@@ -265,17 +265,18 @@ impl AsyncBinaryReader {
         }
     }
 
-    pub fn get_items_stream<E: BucketItem>(
+    pub fn get_items_stream<S: BucketItemSerializer>(
         &self,
         read_thread: Arc<AsyncReaderThread>,
-        buffer: E::ReadBuffer,
-        extra_buffer: E::ExtraDataBuffer,
-    ) -> AsyncBinaryReaderItemsIterator<E> {
+        buffer: S::ReadBuffer,
+        extra_buffer: S::ExtraDataBuffer,
+    ) -> AsyncBinaryReaderItemsIterator<S> {
         let stream = read_thread.read_bucket(self.opened_file.clone());
         AsyncBinaryReaderItemsIterator {
             buffer,
             extra_buffer,
             stream,
+            deserializer: S::new(),
         }
     }
 
@@ -284,15 +285,20 @@ impl AsyncBinaryReader {
     }
 }
 
-pub struct AsyncBinaryReaderItemsIterator<E: BucketItem> {
-    buffer: E::ReadBuffer,
-    extra_buffer: E::ExtraDataBuffer,
+pub struct AsyncBinaryReaderItemsIterator<S: BucketItemSerializer> {
+    buffer: S::ReadBuffer,
+    extra_buffer: S::ExtraDataBuffer,
     stream: AsyncStreamThreadReader,
+    deserializer: S,
 }
 
-impl<E: BucketItem> AsyncBinaryReaderItemsIterator<E> {
-    pub fn next(&mut self) -> Option<(E::ReadType<'_>, &mut E::ExtraDataBuffer)> {
-        let item = E::read_from(&mut self.stream, &mut self.buffer, &mut self.extra_buffer)?;
+impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S> {
+    pub fn next(&mut self) -> Option<(S::ReadType<'_>, &mut S::ExtraDataBuffer)> {
+        let item = self.deserializer.read_from(
+            &mut self.stream,
+            &mut self.buffer,
+            &mut self.extra_buffer,
+        )?;
         Some((item, &mut self.extra_buffer))
     }
 }
