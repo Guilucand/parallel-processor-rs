@@ -26,7 +26,7 @@ pub struct BucketsThreadDispatcher<B: LockFreeBucket, S: BucketItemSerializer> {
     mtb: Arc<MultiThreadBuckets<B>>,
     thread_data: BucketsThreadBuffer,
     drop_panic: PanicOnDrop,
-    serializer: S,
+    serializers: Vec<S>,
 }
 
 impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
@@ -36,7 +36,7 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
             mtb: mtb.clone(),
             thread_data,
             drop_panic: PanicOnDrop::new("buckets thread dispatcher not finalized"),
-            serializer: S::new(),
+            serializers: (0..mtb.buckets.len()).map(|_| S::new()).collect(),
         }
     }
 
@@ -49,15 +49,20 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
         element: &S::InputElementType<'_>,
     ) {
         let bucket_buf = &mut self.thread_data.buffers[bucket as usize];
-        if self.serializer.get_size(element, extra_data) + bucket_buf.len() > bucket_buf.capacity()
+        if self.serializers[bucket as usize].get_size(element, extra_data) + bucket_buf.len()
+            > bucket_buf.capacity()
             && bucket_buf.len() > 0
         {
             self.mtb.add_data(bucket, bucket_buf.as_slice());
             bucket_buf.clear();
-            self.serializer.reset();
+            self.serializers[bucket as usize].reset();
         }
-        self.serializer
-            .write_to(element, bucket_buf, extra_data, extra_data_buffer);
+        self.serializers[bucket as usize].write_to(
+            element,
+            bucket_buf,
+            extra_data,
+            extra_data_buffer,
+        );
     }
 
     #[inline]
