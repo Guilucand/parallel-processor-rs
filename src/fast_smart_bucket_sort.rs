@@ -158,7 +158,7 @@ pub fn striped_parallel_smart_radix_sort<T: Ord + Send + Sync + Debug, F: SortKe
     striped_file.par_iter().for_each(|chunk| {
         let mut counts = queue.pop().unwrap();
         for el in chunk.iter() {
-            counts[((F::get_shifted(el, first_shift)) as usize + 1)] += 1usize;
+            counts[(F::get_shifted(el, first_shift)) as usize + 1] += 1usize;
         }
         queue.push(counts).unwrap();
     });

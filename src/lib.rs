@@ -1,5 +1,5 @@
 #![cfg_attr(test, feature(type_alias_impl_trait))]
-#![deny(warnings)]
+#![cfg_attr(debug_assertions, deny(warnings))]
 
 #[macro_use]
 pub extern crate mt_debug_counters;
