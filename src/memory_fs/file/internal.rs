@@ -365,6 +365,7 @@ impl MemoryFileInternal {
                 }
                 Self::put_on_swappable_list(&self_);
 
+                drop(self_);
                 chunk = CHUNKS_ALLOCATOR.request_chunk(chunk_usage!(FileBuffer {
                     path: std::panic::Location::caller().to_string()
                 }));
