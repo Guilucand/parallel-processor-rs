@@ -1,7 +1,7 @@
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::{MemoryFs, FILES_FLUSH_HASH_MAP};
 use parking_lot::lock_api::RawMutex as _;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::alloc::{alloc, dealloc, Layout};
 use std::cmp::{max, min};
 use std::slice::{from_raw_parts, from_raw_parts_mut};
@@ -214,7 +214,11 @@ impl ChunksAllocator {
         }
     }
 
-    fn allocate_contiguous_chunk(&self, chunks_count: usize) -> impl Iterator<Item = usize> {
+    fn allocate_contiguous_chunk(
+        &self,
+        chunks_count: usize,
+        buffers_list: &mut MutexGuard<Vec<(usize, usize)>>,
+    ) -> impl Iterator<Item = usize> {
         let chunk_padded_size = self.chunk_padded_size.load(Ordering::Relaxed);
 
         self.chunks_total_count
@@ -238,7 +242,7 @@ impl ChunksAllocator {
             }
         }
 
-        self.buffers_list.lock().push((data as usize, chunks_count));
+        buffers_list.push((data as usize, chunks_count));
 
         (0..chunks_count)
             .into_iter()
@@ -286,7 +290,8 @@ impl ChunksAllocator {
         self.chunks_log_size
             .store(chunks_log_size, Ordering::Relaxed);
 
-        let chunks_iter = self.allocate_contiguous_chunk(chunks_count);
+        let chunks_iter =
+            self.allocate_contiguous_chunk(chunks_count, &mut self.buffers_list.lock());
 
         self.chunks.lock().extend(chunks_iter);
 
@@ -368,7 +373,7 @@ impl ChunksAllocator {
                     if chunks_lock.len() == 0 {
                         if !self
                             .chunks_wait_condvar
-                            .wait_for(&mut chunks_lock, Duration::from_millis(500))
+                            .wait_for(&mut chunks_lock, Duration::from_millis(25))
                             .timed_out()
                         {
                             tries_count = 0;
@@ -394,19 +399,26 @@ impl ChunksAllocator {
                             )
                         }
 
-                        // We're out of memory, let's try to allocate another chunk
-                        let alloc_multiplier = 1.2;
+                        let mut buffers_list = self.buffers_list.lock();
+                        // We're still out of memory, let's try to allocate another chunk
+                        // This check is done again to avoid allocating multiple contiguous chunks
+                        // on multiple threads memory exaustion
+                        if chunks_lock.len() == 0 {
+                            let alloc_multiplier = 1 << (buffers_list.len().saturating_sub(1));
 
-                        let extra_chunks_count = (OUT_OF_MEMORY_ALLOCATION_SIZE.as_bytes() as f64
-                            * alloc_multiplier) as usize
-                            / self.chunk_usable_size.load(Ordering::Relaxed);
-                        let chunks_iter = self.allocate_contiguous_chunk(extra_chunks_count);
-                        chunks_lock.extend(chunks_iter);
-                        println!(
-                            "Allocated {} extra chunks for temporary files ({})",
-                            extra_chunks_count,
-                            OUT_OF_MEMORY_ALLOCATION_SIZE * alloc_multiplier as f64
-                        );
+                            let extra_chunks_count = (OUT_OF_MEMORY_ALLOCATION_SIZE.as_bytes()
+                                * alloc_multiplier)
+                                / self.chunk_usable_size.load(Ordering::Relaxed);
+                            let chunks_iter = self
+                                .allocate_contiguous_chunk(extra_chunks_count, &mut buffers_list);
+                            chunks_lock.extend(chunks_iter);
+
+                            println!(
+                                "Allocated {} extra chunks for temporary files ({})",
+                                extra_chunks_count,
+                                OUT_OF_MEMORY_ALLOCATION_SIZE * alloc_multiplier as f64
+                            );
+                        }
                         // Reset the tries counter
                         tries_count = 0;
                     }
