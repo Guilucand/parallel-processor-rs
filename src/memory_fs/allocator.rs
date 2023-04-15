@@ -395,21 +395,18 @@ impl ChunksAllocator {
                         }
 
                         // We're out of memory, let's try to allocate another chunk
-                        if let Some(mut free_chunk_pool) = self.chunks.try_lock() {
-                            let alloc_multiplier =
-                                1 << (self.buffers_list.lock().len().saturating_sub(1));
+                        let alloc_multiplier = 1.2;
 
-                            let extra_chunks_count = OUT_OF_MEMORY_ALLOCATION_SIZE.as_bytes()
-                                * alloc_multiplier
-                                / self.chunk_usable_size.load(Ordering::Relaxed);
-                            let chunks_iter = self.allocate_contiguous_chunk(extra_chunks_count);
-                            free_chunk_pool.extend(chunks_iter);
-                            println!(
-                                "Allocated {} extra chunks for temporary files ({})",
-                                extra_chunks_count,
-                                OUT_OF_MEMORY_ALLOCATION_SIZE * alloc_multiplier as f64
-                            );
-                        }
+                        let extra_chunks_count = (OUT_OF_MEMORY_ALLOCATION_SIZE.as_bytes() as f64
+                            * alloc_multiplier) as usize
+                            / self.chunk_usable_size.load(Ordering::Relaxed);
+                        let chunks_iter = self.allocate_contiguous_chunk(extra_chunks_count);
+                        chunks_lock.extend(chunks_iter);
+                        println!(
+                            "Allocated {} extra chunks for temporary files ({})",
+                            extra_chunks_count,
+                            OUT_OF_MEMORY_ALLOCATION_SIZE * alloc_multiplier as f64
+                        );
                         // Reset the tries counter
                         tries_count = 0;
                     }
