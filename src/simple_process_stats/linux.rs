@@ -6,8 +6,8 @@ use std::path::Path;
 use std::time::Duration;
 
 pub fn get_info() -> Result<ProcessStats, Error> {
-    let bytes_per_page = procfs::page_size().map_err(Error::SystemCall)?;
-    let ticks_per_second = procfs::ticks_per_second().map_err(Error::SystemCall)?;
+    let bytes_per_page = procfs::page_size();
+    let ticks_per_second = procfs::ticks_per_second();
 
     let path = Path::new("/proc/self/stat");
     let mut file_contents = Vec::new();
