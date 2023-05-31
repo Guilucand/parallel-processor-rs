@@ -1,6 +1,6 @@
 [package]
 name = "parallel-processor"
-version = "0.1.10"
+version = "0.1.11"
 authors = ["Andrea Cracco <guilucand@gmail.com>"]
 edition = "2021"
 categories = []
@@ -19,7 +19,7 @@ rand = "0.8.5"
 rayon = "1.7.0"
 replace_with = "0.1.7"
 unchecked-index = "0.2.2"
-nightly-quirks = "0.1.2"
+nightly-quirks = "0.1.4"
 
 # Memory tracking
 dashmap = { version = "5.4.0", features = ["serde"] }
