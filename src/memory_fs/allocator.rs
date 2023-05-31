@@ -235,9 +235,9 @@ impl ChunksAllocator {
 
         #[cfg(feature = "memory-guards")]
         unsafe {
-            let first_guard = data.add(chunk_usable_size.load(Ordering::Relaxed));
+            let first_guard = data.add(self.chunk_usable_size.load(Ordering::Relaxed));
             for i in 0..chunks_count {
-                let guard = first_guard.add(i * ALLOCATED_CHUNK_PADDED_SIZE);
+                let guard = first_guard.add(i * chunk_padded_size);
                 libc::mprotect(guard as *mut libc::c_void, 4096, libc::PROT_NONE);
             }
         }
