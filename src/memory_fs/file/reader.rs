@@ -4,11 +4,10 @@ use parking_lot::{RawRwLock, RwLock};
 use std::cmp::min;
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub struct FileReader {
-    path: PathBuf,
+    name: String,
     file: Arc<RwLock<MemoryFileInternal>>,
     current_chunk_ref: Option<ArcRwLockReadGuard<RawRwLock, FileChunk>>,
     current_chunk_index: usize,
@@ -24,7 +23,7 @@ unsafe impl Send for FileReader {}
 impl Clone for FileReader {
     fn clone(&self) -> Self {
         Self {
-            path: self.path.clone(),
+            name: self.name.clone(),
             file: self.file.clone(),
             current_chunk_ref: self
                 .current_chunk_ref
@@ -53,9 +52,9 @@ impl FileReader {
         self.current_chunk_ref = Some(chunk_guard);
     }
 
-    pub fn open(path: impl AsRef<Path>, prefetch_amount: Option<usize>) -> Option<Self> {
-        let file = match MemoryFileInternal::retrieve_reference(&path) {
-            None => MemoryFileInternal::create_from_fs(&path)?,
+    pub fn open(name: &str, prefetch_amount: Option<usize>) -> Option<Self> {
+        let file = match MemoryFileInternal::retrieve_reference(&name) {
+            None => MemoryFileInternal::create_from_fs(name)?,
             Some(x) => x,
         };
 
@@ -66,7 +65,7 @@ impl FileReader {
         drop(file_lock);
 
         let mut reader = Self {
-            path: path.as_ref().into(),
+            name: name.to_string(),
             file,
             current_chunk_ref: None,
             current_chunk_index: 0,
@@ -88,7 +87,7 @@ impl FileReader {
     }
 
     pub fn close_and_remove(self, remove_fs: bool) -> bool {
-        MemoryFileInternal::delete(self.path, remove_fs)
+        MemoryFileInternal::delete(&self.name, remove_fs)
     }
 
     // pub fn get_typed_chunks_mut<T>(&mut self) -> Option<impl Iterator<Item = &mut [T]>> {

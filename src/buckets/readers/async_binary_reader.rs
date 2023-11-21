@@ -6,7 +6,6 @@ use crossbeam::channel::*;
 use parking_lot::{Condvar, Mutex};
 use std::cmp::min;
 use std::io::Read;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -208,33 +207,33 @@ impl Drop for AsyncStreamThreadReader {
 
 #[derive(Clone)]
 pub struct AsyncBinaryReader {
-    path: PathBuf,
+    name: String,
     opened_file: OpenedFile,
 }
 
 impl AsyncBinaryReader {
     pub fn new(
-        path: &PathBuf,
+        name: &str,
         compressed: bool,
         remove_file: RemoveFileMode,
         prefetch: Option<usize>,
     ) -> Self {
         let opened_file = if compressed {
             OpenedFile::Compressed(Arc::new(CompressedBinaryReader::new(
-                path,
+                name,
                 remove_file,
                 prefetch,
             )))
         } else {
             OpenedFile::Plain(Arc::new(LockFreeBinaryReader::new(
-                path,
+                name,
                 remove_file,
                 prefetch,
             )))
         };
 
         Self {
-            path: path.clone(),
+            name: name.to_string(),
             opened_file,
         }
     }
@@ -280,8 +279,8 @@ impl AsyncBinaryReader {
         }
     }
 
-    pub fn get_name(&self) -> PathBuf {
-        self.path.clone()
+    pub fn get_name(&self) -> String {
+        self.name.clone()
     }
 }
 

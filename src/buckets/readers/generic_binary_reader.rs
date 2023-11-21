@@ -7,7 +7,6 @@ use desse::Desse;
 use desse::DesseSized;
 use replace_with::replace_with_or_abort;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -23,7 +22,7 @@ pub struct GenericChunkedBinaryReader<D: ChunkDecoder> {
     sequential_reader: SequentialReader<D>,
     parallel_reader: FileReader,
     parallel_index: AtomicU64,
-    file_path: PathBuf,
+    file_name: String,
 }
 
 unsafe impl<D: ChunkDecoder> Sync for GenericChunkedBinaryReader<D> {}
@@ -90,17 +89,13 @@ impl<D: ChunkDecoder> Read for SequentialReader<D> {
 }
 
 impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
-    pub fn new(
-        name: impl AsRef<Path>,
-        remove_file: RemoveFileMode,
-        prefetch_amount: Option<usize>,
-    ) -> Self {
+    pub fn new(name: &str, remove_file: RemoveFileMode, prefetch_amount: Option<usize>) -> Self {
         let mut file = FileReader::open(&name, prefetch_amount)
-            .unwrap_or_else(|| panic!("Cannot open file {}", name.as_ref().display()));
+            .unwrap_or_else(|| panic!("Cannot open file {}", name));
 
         let mut header_buffer = [0; BucketHeader::SIZE];
         file.read_exact(&mut header_buffer)
-            .unwrap_or_else(|_| panic!("File {} is corrupted", name.as_ref().display()));
+            .unwrap_or_else(|_| panic!("File {} is corrupted", name));
 
         let header: BucketHeader = BucketHeader::deserialize_from(&header_buffer);
         assert_eq!(&header.magic, D::MAGIC_HEADER);
@@ -111,7 +106,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         // println!(
         //     "Index: {} for {}",
         //     index.index.len(),
-        //     name.as_ref().display()
+        //     name
         // );
 
         file.seek(SeekFrom::Start(index.index[0])).unwrap();
@@ -125,10 +120,10 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
                 last_byte_position: header.index_offset,
                 index_position: 0,
             },
-            parallel_reader: FileReader::open(&name, prefetch_amount).unwrap(),
+            parallel_reader: FileReader::open(name, prefetch_amount).unwrap(),
             parallel_index: AtomicU64::new(0),
             remove_file,
-            file_path: name.as_ref().to_path_buf(),
+            file_name: name.to_string(),
         }
     }
 
@@ -210,13 +205,13 @@ impl<D: ChunkDecoder> BucketReader for GenericChunkedBinaryReader<D> {
         }
     }
 
-    fn get_name(&self) -> PathBuf {
-        self.file_path.clone()
+    fn get_name(&self) -> String {
+        self.file_name.clone()
     }
 }
 
 impl<D: ChunkDecoder> Drop for GenericChunkedBinaryReader<D> {
     fn drop(&mut self) {
-        MemoryFs::remove_file(&self.file_path, self.remove_file).unwrap();
+        MemoryFs::remove_file(&self.file_name, self.remove_file).unwrap();
     }
 }

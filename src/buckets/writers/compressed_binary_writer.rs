@@ -10,7 +10,6 @@ use mt_debug_counters::counter::AtomicCounterGuardSum;
 use parking_lot::Mutex;
 use replace_with::replace_with_or_abort;
 use std::io::Write;
-use std::path::{Path, PathBuf};
 
 pub const COMPRESSED_BUCKET_MAGIC: &[u8; 16] = b"CPLZ4_INTR_BKT_M";
 
@@ -52,7 +51,7 @@ struct CompressedBinaryWriterInternal {
 
 pub struct CompressedBinaryWriter {
     inner: Mutex<CompressedBinaryWriterInternal>,
-    path: PathBuf,
+    name: String,
 }
 unsafe impl Send for CompressedBinaryWriter {}
 
@@ -90,7 +89,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
     );
 
     fn new(
-        path_prefix: &Path,
+        name_prefix: &str,
         (file_mode, checkpoint_max_size, compression_level): &(
             MemoryFileMode,
             CompressedCheckpointSize,
@@ -98,13 +97,9 @@ impl LockFreeBucket for CompressedBinaryWriter {
         ),
         index: usize,
     ) -> Self {
-        let path = path_prefix.parent().unwrap().join(format!(
-            "{}.{}",
-            path_prefix.file_name().unwrap().to_str().unwrap(),
-            index
-        ));
+        let name = format!("{}.{}", name_prefix, index);
 
-        let mut file = FileWriter::create(&path, *file_mode);
+        let mut file = FileWriter::create(&name, *file_mode);
 
         let first_checkpoint = initialize_bucket_file(&mut file);
 
@@ -118,7 +113,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
                 current_chunk_size: 0,
                 level: *compression_level,
             }),
-            path,
+            name,
         }
     }
 
@@ -136,8 +131,8 @@ impl LockFreeBucket for CompressedBinaryWriter {
         drop(stat_raii);
     }
 
-    fn get_path(&self) -> PathBuf {
-        self.path.clone()
+    fn get_filename(&self) -> String {
+        self.name.clone()
     }
     fn finalize(self) {
         let mut inner = self.inner.into_inner();

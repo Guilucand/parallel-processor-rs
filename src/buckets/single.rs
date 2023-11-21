@@ -1,7 +1,6 @@
 use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::{LockFreeBucket, MultiThreadBuckets};
 use crate::memory_data_size::MemoryDataSize;
-use std::path::PathBuf;
 
 pub struct SingleBucketThreadDispatcher<'a, B: LockFreeBucket, S: BucketItemSerializer> {
     buckets: &'a MultiThreadBuckets<B>,
@@ -30,7 +29,7 @@ impl<'a, B: LockFreeBucket, S: BucketItemSerializer> SingleBucketThreadDispatche
         self.bucket_index
     }
 
-    pub fn get_path(&self) -> PathBuf {
+    pub fn get_path(&self) -> String {
         self.buckets.get_path(self.bucket_index)
     }
 

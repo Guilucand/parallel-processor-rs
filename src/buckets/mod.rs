@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub mod bucket_writer;
@@ -10,9 +9,9 @@ pub mod writers;
 pub trait LockFreeBucket {
     type InitData;
 
-    fn new(path: &Path, data: &Self::InitData, index: usize) -> Self;
+    fn new(name_prefix: &str, data: &Self::InitData, index: usize) -> Self;
     fn write_data(&self, bytes: &[u8]);
-    fn get_path(&self) -> PathBuf;
+    fn get_filename(&self) -> String;
     fn finalize(self);
 }
 
@@ -23,11 +22,11 @@ pub struct MultiThreadBuckets<B: LockFreeBucket> {
 impl<B: LockFreeBucket> MultiThreadBuckets<B> {
     pub const EMPTY: Self = Self { buckets: vec![] };
 
-    pub fn new(size: usize, path: PathBuf, init_data: &B::InitData) -> MultiThreadBuckets<B> {
+    pub fn new(size: usize, name: &str, init_data: &B::InitData) -> MultiThreadBuckets<B> {
         let mut buckets = Vec::with_capacity(size);
 
         for i in 0..size {
-            buckets.push(B::new(&path, init_data, i));
+            buckets.push(B::new(&name, init_data, i));
         }
         MultiThreadBuckets { buckets }
     }
@@ -37,8 +36,8 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         buckets.into_iter()
     }
 
-    pub fn get_path(&self, bucket: u16) -> PathBuf {
-        self.buckets[bucket as usize].get_path()
+    pub fn get_path(&self, bucket: u16) -> String {
+        self.buckets[bucket as usize].get_filename()
     }
 
     pub fn add_data(&self, index: u16, data: &[u8]) {
@@ -49,7 +48,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         self.buckets.len()
     }
 
-    pub fn finalize(self: Arc<Self>) -> Vec<PathBuf> {
+    pub fn finalize(self: Arc<Self>) -> Vec<String> {
         let mut self_ = Arc::try_unwrap(self)
             .unwrap_or_else(|_| panic!("Cannot take full ownership of multi thread buckets!"));
 
@@ -57,7 +56,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
             .buckets
             .drain(..)
             .map(|bucket| {
-                let path = bucket.get_path();
+                let path = bucket.get_filename();
                 bucket.finalize();
                 path
             })

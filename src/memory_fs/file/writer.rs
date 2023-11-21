@@ -3,14 +3,15 @@ use crate::memory_fs::file::internal::{
     FileChunk, MemoryFileInternal, MemoryFileMode, OpenMode, UnderlyingFile,
 };
 use parking_lot::{RwLock, RwLockWriteGuard};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use super::fs_interface::FileWriterInterface;
+
 pub struct FileWriter {
-    path: PathBuf,
+    name: String,
     current_buffer: RwLock<AllocatedChunk>,
     file_length: AtomicU64,
     file: Arc<RwLock<MemoryFileInternal>>,
@@ -18,15 +19,15 @@ pub struct FileWriter {
 
 impl FileWriter {
     /// Creates a new file with the specified mode
-    pub fn create(path: impl AsRef<Path>, mode: MemoryFileMode) -> Self {
+    pub fn create(name: &str, mode: MemoryFileMode) -> Self {
         Self {
-            path: PathBuf::from(path.as_ref()),
+            name: name.to_string(),
             current_buffer: RwLock::new(
                 CHUNKS_ALLOCATOR.request_chunk(chunk_usage!(TemporarySpace)),
             ),
             file_length: AtomicU64::new(0),
             file: {
-                let file = MemoryFileInternal::create_new(path, mode);
+                let file = MemoryFileInternal::create_new(name, mode);
                 file.write().open(OpenMode::Write).unwrap();
                 file
             },
@@ -54,13 +55,10 @@ impl FileWriter {
                 match file_read.get_chunk(0).read().deref() {
                     FileChunk::OnDisk { .. } => {
                         if let UnderlyingFile::WriteMode { file, .. } =
-                            file_read.get_underlying_file().deref()
+                            file_read.get_underlying_file()
                         {
                             let mut disk_file_lock = file.1.lock();
-                            let position = disk_file_lock.stream_position().unwrap();
-                            disk_file_lock.seek(SeekFrom::Start(0)).unwrap();
-                            disk_file_lock.write_all(data).unwrap();
-                            disk_file_lock.seek(SeekFrom::Start(position)).unwrap();
+                            disk_file_lock.write_at_start(data);
                             Ok(())
                         } else {
                             Err(())
@@ -132,8 +130,8 @@ impl FileWriter {
         }
     }
 
-    pub fn get_path(&self) -> PathBuf {
-        self.path.clone()
+    pub fn get_path(&self) -> String {
+        self.name.clone()
     }
 
     pub fn flush_async(&self) {}

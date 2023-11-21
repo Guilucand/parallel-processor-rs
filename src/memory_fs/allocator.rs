@@ -1,5 +1,5 @@
 use crate::memory_data_size::MemoryDataSize;
-use crate::memory_fs::{MemoryFs, FILES_FLUSH_HASH_MAP};
+use crate::memory_fs::MemoryFs;
 use parking_lot::lock_api::RawMutex as _;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::alloc::{alloc, dealloc, Layout};
@@ -478,10 +478,6 @@ impl ChunksAllocator {
             }
 
             chunks = self.chunks.lock();
-        }
-
-        unsafe {
-            FILES_FLUSH_HASH_MAP.take();
         }
 
         {

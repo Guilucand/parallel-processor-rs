@@ -1,4 +1,3 @@
-use crate::memory_fs::allocator::AllocatedChunk;
 use crate::memory_fs::file::internal::FileChunk;
 use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
 use crossbeam::channel::*;
@@ -6,13 +5,11 @@ use mt_debug_counters::counter::{AtomicCounter, AtomicCounterGuardSum, MaxMode, 
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{Mutex, RwLock};
 use std::cmp::max;
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
 use std::ops::DerefMut;
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+use super::fs_interface::FileWriterInterface;
 
 static mut GLOBAL_FLUSH_QUEUE: Option<Sender<FlushableItem>> = None;
 static FLUSH_THREADS: Mutex<Vec<JoinHandle<()>>> =
@@ -24,8 +21,8 @@ static WRITING_CHECK: RwLock<()> = RwLock::const_new(parking_lot::RawRwLock::INI
 static COUNTER_WRITING_APPEND: AtomicCounter<SumMode> =
     declare_counter_i64!("threads_file_append_count", SumMode, false);
 
-static COUNTER_WRITE_AT: AtomicCounter<SumMode> =
-    declare_counter_i64!("threads_write_at_count", SumMode, false);
+// static COUNTER_WRITE_AT: AtomicCounter<SumMode> =
+//     declare_counter_i64!("threads_write_at_count", SumMode, false);
 
 static COUNTER_DISK_FLUSHES: AtomicCounter<SumMode> =
     declare_counter_i64!("disk_flushes", SumMode, false);
@@ -78,24 +75,23 @@ impl GlobalFlush {
                         GLOBAL_QUEUE_MAX_SIZE_NOW.max(flush_channel_receiver.len() as i64);
                         COUNTER_DISK_FLUSHES.inc();
 
-                        let offset = file_lock.stream_position().unwrap();
+                        let offset = file_lock.get_position();
 
-                        file_lock.write_all(chunk.get()).unwrap();
+                        file_lock.write_data(chunk.get());
                         let len = chunk.len();
                         *file_chunk = FileChunk::OnDisk { offset, len };
                         COUNTER_BYTES_WRITTEN.inc_by(len as i64);
                     }
-                }
-                FileFlushMode::WriteAt { buffer, offset } => {
-                    let _writing_check = WRITING_CHECK.read();
-                    GLOBAL_QUEUE_MAX_SIZE_NOW.max(flush_channel_receiver.len() as i64);
+                } // FileFlushMode::WriteAt { buffer, offset } => {
+                  //     let _writing_check = WRITING_CHECK.read();
+                  //     GLOBAL_QUEUE_MAX_SIZE_NOW.max(flush_channel_receiver.len() as i64);
 
-                    COUNTER_DISK_FLUSHES.inc();
-                    let _stat = AtomicCounterGuardSum::new(&COUNTER_WRITE_AT, 1);
-                    file_lock.seek(SeekFrom::Start(offset)).unwrap();
-                    file_lock.write_all(buffer.get()).unwrap();
-                    COUNTER_BYTES_WRITTEN.inc_by(buffer.get().len() as i64);
-                }
+                  //     COUNTER_DISK_FLUSHES.inc();
+                  //     let _stat = AtomicCounterGuardSum::new(&COUNTER_WRITE_AT, 1);
+                  //     file_lock.seek(SeekFrom::Start(offset)).unwrap();
+                  //     file_lock.write_data(buffer.get());
+                  //     COUNTER_BYTES_WRITTEN.inc_by(buffer.get().len() as i64);
+                  // }
             }
 
             drop(_writing_check);
@@ -127,16 +123,16 @@ impl GlobalFlush {
         }
     }
 
-    pub fn schedule_disk_write(
-        file: Arc<(PathBuf, Mutex<File>)>,
-        buffer: AllocatedChunk,
-        offset: u64,
-    ) {
-        Self::add_item_to_flush_queue(FlushableItem {
-            underlying_file: file,
-            mode: FileFlushMode::WriteAt { buffer, offset },
-        })
-    }
+    // pub fn schedule_disk_write(
+    //     file: Arc<(PathBuf, Mutex<File>)>,
+    //     buffer: AllocatedChunk,
+    //     offset: u64,
+    // ) {
+    //     Self::add_item_to_flush_queue(FlushableItem {
+    //         underlying_file: file,
+    //         mode: FileFlushMode::WriteAt { buffer, offset },
+    //     })
+    // }
 
     pub fn flush_to_disk() {
         while !unsafe { GLOBAL_FLUSH_QUEUE.as_mut().unwrap().is_empty() } {

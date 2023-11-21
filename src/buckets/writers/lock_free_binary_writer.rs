@@ -6,7 +6,6 @@ use crate::memory_fs::file::writer::FileWriter;
 use crate::utils::memory_size_to_log2;
 use mt_debug_counters::counter::AtomicCounterGuardSum;
 use parking_lot::Mutex;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const LOCK_FREE_BUCKET_MAGIC: &[u8; 16] = b"PLAIN_INTR_BKT_M";
@@ -38,17 +37,13 @@ impl LockFreeBucket for LockFreeBinaryWriter {
     type InitData = (MemoryFileMode, LockFreeCheckpointSize);
 
     fn new(
-        path_prefix: &Path,
+        name_prefix: &str,
         (file_mode, checkpoint_max_size): &(MemoryFileMode, LockFreeCheckpointSize),
         index: usize,
     ) -> Self {
-        let path = path_prefix.parent().unwrap().join(format!(
-            "{}.{}",
-            path_prefix.file_name().unwrap().to_str().unwrap(),
-            index
-        ));
+        let name = format!("{}.{}", name_prefix, index);
 
-        let mut writer = FileWriter::create(path, *file_mode);
+        let mut writer = FileWriter::create(&name, *file_mode);
 
         let first_checkpoint = initialize_bucket_file(&mut writer);
 
@@ -78,7 +73,7 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         drop(stat_raii);
     }
 
-    fn get_path(&self) -> PathBuf {
+    fn get_filename(&self) -> String {
         self.writer.get_path()
     }
     fn finalize(self) {

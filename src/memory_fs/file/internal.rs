@@ -1,8 +1,12 @@
+use super::fs_interface::{
+    DefaultReadFileInterface, DefaultWriteFileInterface, FileWriterInterface, FsInterface,
+};
 use crate::memory_fs::allocator::{AllocatedChunk, CHUNKS_ALLOCATOR};
 use crate::memory_fs::file::flush::GlobalFlush;
+use crate::memory_fs::file::fs_interface::FileReaderInterface;
 use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
+use crate::memory_fs::FILE_SYSTEM;
 use dashmap::DashMap;
-use filebuffer::FileBuffer;
 use lazy_static::lazy_static;
 use nightly_quirks::utils::NightlyUtils;
 use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard, RawMutex};
@@ -10,20 +14,17 @@ use parking_lot::{Mutex, RawRwLock, RwLock, RwLockReadGuard};
 use replace_with::replace_with_or_abort;
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::fs::{remove_file, File, OpenOptions};
-use std::io::Write;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 lazy_static! {
-    static ref MEMORY_MAPPED_FILES: DashMap<PathBuf, Arc<RwLock<MemoryFileInternal>>> =
+    static ref MEMORY_MAPPED_FILES: DashMap<String, Arc<RwLock<MemoryFileInternal>>> =
         DashMap::new();
 }
 
 pub static SWAPPABLE_FILES: Mutex<
-    Option<BTreeMap<(usize, PathBuf), Weak<RwLock<MemoryFileInternal>>>>,
+    Option<BTreeMap<(usize, String), Weak<RwLock<MemoryFileInternal>>>>,
 > = Mutex::const_new(parking_lot::RawMutex::INIT, None);
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -85,15 +86,13 @@ impl FileChunk {
             match self {
                 FileChunk::OnDisk { offset, .. } => {
                     if let UnderlyingFile::ReadMode(file) = file {
-                        let file = file.as_ref().unwrap();
-
                         if let Some(prefetch) = prefetch {
                             let remaining_length = file.len() - *offset as usize;
                             let prefetch_length = min(remaining_length, prefetch);
                             file.prefetch(*offset as usize, prefetch_length);
                         }
 
-                        file.as_ptr().add(*offset as usize)
+                        file.get_mmap_at(*offset as usize)
                     } else {
                         panic!("Error, wrong underlying file!");
                     }
@@ -109,15 +108,15 @@ pub enum UnderlyingFile {
     MemoryOnly,
     MemoryPreferred,
     WriteMode {
-        file: Arc<(PathBuf, Mutex<File>)>,
+        file: Arc<(String, Mutex<DefaultWriteFileInterface>)>,
         chunk_position: usize,
     },
-    ReadMode(Option<FileBuffer>),
+    ReadMode(DefaultReadFileInterface),
 }
 
 pub struct MemoryFileInternal {
-    /// Path associated with the current file
-    path: PathBuf,
+    /// Name associated with the current file
+    name: String,
     /// Disk read/write structure
     file: UnderlyingFile,
     /// Memory mode
@@ -133,9 +132,9 @@ pub struct MemoryFileInternal {
 }
 
 impl MemoryFileInternal {
-    pub fn create_new(path: impl AsRef<Path>, memory_mode: MemoryFileMode) -> Arc<RwLock<Self>> {
+    pub fn create_new(name: &str, memory_mode: MemoryFileMode) -> Arc<RwLock<Self>> {
         let new_file = Arc::new(RwLock::new(Self {
-            path: path.as_ref().into(),
+            name: name.to_string(),
             file: UnderlyingFile::NotOpened,
             memory_mode,
             open_mode: (OpenMode::None, 0),
@@ -144,20 +143,18 @@ impl MemoryFileInternal {
             can_flush: true,
         }));
 
-        MEMORY_MAPPED_FILES.insert(path.as_ref().into(), new_file.clone());
+        MEMORY_MAPPED_FILES.insert(name.to_string(), new_file.clone());
 
         new_file
     }
 
-    pub fn create_from_fs(path: impl AsRef<Path>) -> Option<Arc<RwLock<Self>>> {
-        if !path.as_ref().exists() || !path.as_ref().is_file() {
-            return None;
-        }
-        let len = path.as_ref().metadata().ok()?.len() as usize;
+    pub fn create_from_fs(name: &str) -> Option<Arc<RwLock<Self>>> {
+        let file = FILE_SYSTEM.open_file(name).ok()?;
+        let len = file.len();
 
         let new_file = Arc::new(RwLock::new(Self {
-            path: path.as_ref().into(),
-            file: UnderlyingFile::NotOpened,
+            name: name.to_string(),
+            file: UnderlyingFile::ReadMode(file),
             memory_mode: MemoryFileMode::DiskOnly,
             open_mode: (OpenMode::None, 0),
             memory: vec![Arc::new(RwLock::new(FileChunk::OnDisk { offset: 0, len }))],
@@ -165,7 +162,7 @@ impl MemoryFileInternal {
             can_flush: false,
         }));
 
-        MEMORY_MAPPED_FILES.insert(path.as_ref().into(), new_file.clone());
+        MEMORY_MAPPED_FILES.insert(name.to_string(), new_file.clone());
 
         Some(new_file)
     }
@@ -173,11 +170,7 @@ impl MemoryFileInternal {
     pub fn debug_dump_files() {
         for file in MEMORY_MAPPED_FILES.iter() {
             let file = file.read();
-            println!(
-                "File '{}' => chunks: {}",
-                file.path.display(),
-                file.memory.len()
-            );
+            println!("File '{}' => chunks: {}", file.name, file.memory.len());
         }
     }
 
@@ -201,16 +194,16 @@ impl MemoryFileInternal {
         self.memory.len()
     }
 
-    pub fn retrieve_reference(path: impl AsRef<Path>) -> Option<Arc<RwLock<Self>>> {
-        MEMORY_MAPPED_FILES.get(path.as_ref()).map(|f| f.clone())
+    pub fn retrieve_reference(name: &str) -> Option<Arc<RwLock<Self>>> {
+        MEMORY_MAPPED_FILES.get(name).map(|f| f.clone())
     }
 
     pub fn active_files_count() -> usize {
         MEMORY_MAPPED_FILES.len()
     }
 
-    pub fn delete(path: impl AsRef<Path>, remove_fs: bool) -> bool {
-        if let Some(file) = MEMORY_MAPPED_FILES.remove(path.as_ref()) {
+    pub fn delete(name: &str, remove_fs: bool) -> bool {
+        if let Some(file) = MEMORY_MAPPED_FILES.remove(name) {
             if remove_fs {
                 match file.1.read().memory_mode {
                     MemoryFileMode::AlwaysMemory => {}
@@ -218,10 +211,10 @@ impl MemoryFileInternal {
                         NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || {
                             BTreeMap::new()
                         })
-                        .remove(&(swap_priority, path.as_ref().to_path_buf()));
+                        .remove(&(swap_priority, name.to_string()));
                     }
                     MemoryFileMode::DiskOnly => {
-                        let _ = remove_file(path);
+                        FILE_SYSTEM.delete_file(name);
                     }
                 }
             }
@@ -231,23 +224,12 @@ impl MemoryFileInternal {
         }
     }
 
-    fn create_writing_underlying_file(path: &Path) -> UnderlyingFile {
+    fn create_writing_underlying_file(name: &str) -> UnderlyingFile {
         // Remove the file if it existed from a previous run
-        let _ = remove_file(path);
+        FILE_SYSTEM.delete_file(name);
 
         UnderlyingFile::WriteMode {
-            file: Arc::new((
-                path.to_path_buf(),
-                Mutex::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .append(false)
-                        // .custom_flags(O_DIRECT)
-                        .open(path)
-                        .unwrap(),
-                ),
-            )),
+            file: Arc::new((name.to_string(), Mutex::new(FILE_SYSTEM.new_file(name)))),
             chunk_position: 0,
         }
     }
@@ -259,7 +241,7 @@ impl MemoryFileInternal {
         }
 
         if self.open_mode.0 != OpenMode::None {
-            return Err(format!("File {} is already opened!", self.path.display()));
+            return Err(format!("File {} is already opened!", self.name));
         }
 
         {
@@ -279,10 +261,13 @@ impl MemoryFileInternal {
                             }
 
                             if let UnderlyingFile::WriteMode { file, .. } = file {
-                                file.1.lock().flush().unwrap();
+                                file.1.lock().flush();
                             }
 
-                            UnderlyingFile::ReadMode(FileBuffer::open(&self.path).ok())
+                            FILE_SYSTEM
+                                .open_file(&self.name)
+                                .map(|f| UnderlyingFile::ReadMode(f))
+                                .unwrap_or(UnderlyingFile::NotOpened)
                         }
                     }
                     OpenMode::Write => {
@@ -291,7 +276,7 @@ impl MemoryFileInternal {
                             MemoryFileMode::AlwaysMemory => UnderlyingFile::MemoryOnly,
                             MemoryFileMode::PreferMemory { .. } => UnderlyingFile::MemoryPreferred,
                             MemoryFileMode::DiskOnly => {
-                                Self::create_writing_underlying_file(&self.path)
+                                Self::create_writing_underlying_file(&self.name)
                             }
                         }
                     }
@@ -309,7 +294,7 @@ impl MemoryFileInternal {
             self.open_mode.0 = OpenMode::None;
             match &self.file {
                 UnderlyingFile::WriteMode { file, .. } => {
-                    file.1.lock().flush().unwrap();
+                    file.1.lock().flush();
                 }
                 _ => {}
             }
@@ -321,7 +306,7 @@ impl MemoryFileInternal {
             if !self_.on_swap_list.swap(true, Ordering::Relaxed) {
                 NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || BTreeMap::new())
                     .insert(
-                        (swap_priority, self_.path.clone()),
+                        (swap_priority, self_.name.clone()),
                         Arc::downgrade(ArcRwLockWriteGuard::rwlock(self_)),
                     );
             }
@@ -397,7 +382,7 @@ impl MemoryFileInternal {
 
         match &self.file {
             UnderlyingFile::NotOpened | UnderlyingFile::MemoryPreferred => {
-                self.file = Self::create_writing_underlying_file(&self.path);
+                self.file = Self::create_writing_underlying_file(&self.name);
             }
             _ => {}
         }
@@ -454,7 +439,7 @@ impl MemoryFileInternal {
     pub fn change_to_disk_only(&mut self) {
         if self.is_memory_preferred() {
             self.memory_mode = MemoryFileMode::DiskOnly;
-            self.file = Self::create_writing_underlying_file(&self.path);
+            self.file = Self::create_writing_underlying_file(&self.name);
         }
     }
 
@@ -464,8 +449,8 @@ impl MemoryFileInternal {
     }
 
     #[inline(always)]
-    pub fn get_path(&self) -> &Path {
-        self.path.as_ref()
+    pub fn get_path(&self) -> &str {
+        self.name.as_ref()
     }
 
     #[inline(always)]

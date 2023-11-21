@@ -1,28 +1,19 @@
-use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
-
-use std::path::{Path, PathBuf};
-
-use std::sync::Arc;
+use std::collections::BTreeMap;
 
 use crate::memory_fs::file::flush::*;
+use std::path::Path;
 
-use parking_lot::Mutex;
-
+use self::file::fs_interface::{DefaultFsInterface, FsInterface};
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::allocator::CHUNKS_ALLOCATOR;
+use crate::memory_fs::file::fs_interface::FileReaderInterface;
 use crate::memory_fs::file::internal::{MemoryFileInternal, SWAPPABLE_FILES};
 use nightly_quirks::utils::NightlyUtils;
-
-pub const O_DIRECT: i32 = 0x4000;
 
 #[macro_use]
 pub mod allocator;
 pub mod file;
 pub mod flushable_buffer;
-
-static mut FILES_FLUSH_HASH_MAP: Option<Mutex<HashMap<PathBuf, Vec<Arc<(PathBuf, Mutex<File>)>>>>> =
-    None;
 
 pub struct MemoryFs;
 
@@ -32,36 +23,38 @@ pub enum RemoveFileMode {
     Remove { remove_fs: bool },
 }
 
+pub(crate) static FILE_SYSTEM: DefaultFsInterface = DefaultFsInterface::new();
+
 impl MemoryFs {
     pub fn init(
+        base_path: impl AsRef<Path>,
         memory_size: MemoryDataSize,
         flush_queue_size: usize,
         threads_count: usize,
         min_chunks_count: usize,
     ) {
-        unsafe {
-            let chunk_size = (memory_size / (min_chunks_count as f64)).as_bytes();
+        let chunk_size = (memory_size / (min_chunks_count as f64)).as_bytes();
 
-            let mut suggested_chunk_size_log = 1;
+        let mut suggested_chunk_size_log = 1;
 
-            while (1 << (suggested_chunk_size_log + 1)) <= chunk_size {
-                suggested_chunk_size_log += 1;
-            }
-
-            CHUNKS_ALLOCATOR.initialize(memory_size, suggested_chunk_size_log, min_chunks_count);
-            FILES_FLUSH_HASH_MAP = Some(Mutex::new(HashMap::with_capacity(8192)));
-            GlobalFlush::init(flush_queue_size, threads_count);
+        while (1 << (suggested_chunk_size_log + 1)) <= chunk_size {
+            suggested_chunk_size_log += 1;
         }
+
+        FILE_SYSTEM.set_base_dir(base_path.as_ref());
+
+        CHUNKS_ALLOCATOR.initialize(memory_size, suggested_chunk_size_log, min_chunks_count);
+        GlobalFlush::init(flush_queue_size, threads_count);
     }
 
-    pub fn remove_file(file: impl AsRef<Path>, remove_mode: RemoveFileMode) -> Result<(), ()> {
+    pub fn remove_file(name: &str, remove_mode: RemoveFileMode) -> Result<(), ()> {
         match remove_mode {
             RemoveFileMode::Keep => {
                 // Do nothing
                 Ok(())
             }
             RemoveFileMode::Remove { remove_fs } => {
-                if MemoryFileInternal::delete(file, remove_fs) {
+                if MemoryFileInternal::delete(name, remove_fs) {
                     Ok(())
                 } else {
                     Err(())
@@ -70,20 +63,10 @@ impl MemoryFs {
         }
     }
 
-    pub fn get_file_size(file: impl AsRef<Path>) -> Option<usize> {
-        MemoryFileInternal::retrieve_reference(&file)
+    pub fn get_file_size(name: &str) -> Option<usize> {
+        MemoryFileInternal::retrieve_reference(name)
             .map(|f| f.read().len())
-            .or_else(|| std::fs::metadata(&file).map(|m| m.len() as usize).ok())
-    }
-
-    pub fn ensure_flushed(file: impl AsRef<Path>) {
-        unsafe {
-            FILES_FLUSH_HASH_MAP
-                .as_mut()
-                .unwrap()
-                .lock()
-                .remove(&file.as_ref().to_path_buf());
-        }
+            .or_else(|| FILE_SYSTEM.open_file(name).map(|f| f.len()).ok())
     }
 
     pub fn flush_all_to_disk() {
@@ -147,7 +130,13 @@ mod tests {
     #[test]
     #[ignore]
     pub fn memory_fs_test() {
-        MemoryFs::init(MemoryDataSize::from_mebioctets(100 * 1024), 1024, 3, 0);
+        MemoryFs::init(
+            "/tmp/",
+            MemoryDataSize::from_mebioctets(100 * 1024),
+            1024,
+            3,
+            0,
+        );
         let data = (0..3337).map(|x| (x % 256) as u8).collect::<Vec<u8>>();
 
         (0..400).into_par_iter().for_each(|i: u32| {
