@@ -210,7 +210,6 @@ impl ExecutionContext {
             .unwrap()
             .downcast_ref::<PacketsPoolStrategy<E>>()
             .unwrap()
-            .deref()
         {
             PacketsPoolStrategy::None => None,
             PacketsPoolStrategy::Shared(pool) => Some(pool.clone()),

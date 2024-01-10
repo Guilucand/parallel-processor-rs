@@ -54,7 +54,7 @@ impl FileWriter {
                 match file_read.get_chunk(0).read().deref() {
                     FileChunk::OnDisk { .. } => {
                         if let UnderlyingFile::WriteMode { file, .. } =
-                            file_read.get_underlying_file().deref()
+                            file_read.get_underlying_file()
                         {
                             let mut disk_file_lock = file.1.lock();
                             let position = disk_file_lock.stream_position().unwrap();
