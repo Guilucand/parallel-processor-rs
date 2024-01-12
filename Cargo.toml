@@ -1,6 +1,6 @@
 [package]
 name = "parallel-processor"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Andrea Cracco <guilucand@gmail.com>"]
 edition = "2021"
 categories = []
