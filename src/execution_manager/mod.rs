@@ -56,7 +56,7 @@ mod tests {
             _global_params: &'a Self::GlobalParams,
             mut receiver: ExecutorReceiver<Self>,
             _memory_tracker: MemoryTracker<Self>,
-        ) -> Self::AsyncExecutorFuture<'a> {
+        ) -> impl Future<Output = ()> + 'a {
             async move {
                 while let Ok((addr, _init_data)) = receiver.obtain_address().await {
                     let pool = addr.pool_alloc_await(1000).await;

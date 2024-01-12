@@ -22,8 +22,6 @@ pub trait AsyncExecutor: Sized + Send + Sync + 'static {
     type GlobalParams: Send + Sync + 'static;
     type InitData: Send + Sync + Clone + 'static;
 
-    type AsyncExecutorFuture<'a>: Future<Output = ()> + Send + 'a;
-
     fn generate_new_address(data: Self::InitData) -> ExecutorAddress {
         let exec = ExecutorAddress {
             executor_keeper: Arc::new(ExecutorDropper::new()),
@@ -41,7 +39,7 @@ pub trait AsyncExecutor: Sized + Send + Sync + 'static {
         global_params: &'a Self::GlobalParams,
         receiver: ExecutorReceiver<Self>,
         memory_tracker: MemoryTracker<Self>,
-    ) -> Self::AsyncExecutorFuture<'a>;
+    ) -> impl Future<Output = ()> + Send + 'a;
 }
 
 pub struct ExecutorReceiver<E: AsyncExecutor> {
