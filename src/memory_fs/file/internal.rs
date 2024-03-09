@@ -231,6 +231,22 @@ impl MemoryFileInternal {
         }
     }
 
+    pub fn delete_directory(dir: impl AsRef<Path>, remove_fs: bool) -> bool {
+        let mut all_succeeded = true;
+        let mut to_delete = vec![];
+        for file in MEMORY_MAPPED_FILES.iter() {
+            if file.key().starts_with(&dir) {
+                to_delete.push(file.key().clone());
+            }
+        }
+
+        for file in to_delete {
+            all_succeeded &= Self::delete(&file, remove_fs);
+        }
+
+        all_succeeded
+    }
+
     fn create_writing_underlying_file(path: &Path) -> UnderlyingFile {
         // Remove the file if it existed from a previous run
         let _ = remove_file(path);
@@ -245,6 +261,7 @@ impl MemoryFileInternal {
                         .append(false)
                         // .custom_flags(O_DIRECT)
                         .open(path)
+                        .map_err(|e| format!("Error while opening file {}: {}", path.display(), e))
                         .unwrap(),
                 ),
             )),
