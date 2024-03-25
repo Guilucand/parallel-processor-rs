@@ -11,7 +11,7 @@ use std::time::Duration;
 const ALLOCATOR_ALIGN: usize = 4096;
 const OUT_OF_MEMORY_ALLOCATION_SIZE: MemoryDataSize = MemoryDataSize::from_mebioctets(256);
 const MAXIMUM_CHUNK_SIZE_LOG: usize = 18;
-const MINIMUM_CHUNK_SIZE_LOG: usize = 8;
+const MINIMUM_CHUNK_SIZE_LOG: usize = 12;
 
 #[macro_export]
 #[cfg(feature = "track-usage")]
@@ -302,15 +302,21 @@ impl ChunksAllocator {
     }
 
     pub fn giveback_free_memory(&self) {
-        let chunks = self.chunks.lock();
-        for chunk_start in chunks.iter() {
-            #[cfg(not(target_os = "windows"))]
-            unsafe {
-                libc::madvise(
-                    *chunk_start as *mut libc::c_void,
-                    self.chunk_padded_size.load(Ordering::Relaxed),
-                    libc::MADV_DONTNEED,
-                );
+        #[cfg(not(target_os = "windows"))]
+        {
+            let pagesize = page_size::get();
+
+            let pages_per_chunk = self.chunk_padded_size.load(Ordering::Relaxed) / pagesize;
+
+            let chunks = self.chunks.lock();
+            for chunk_start in chunks.iter() {
+                unsafe {
+                    libc::madvise(
+                        *chunk_start as *mut libc::c_void,
+                        pages_per_chunk * pagesize,
+                        libc::MADV_DONTNEED,
+                    );
+                }
             }
         }
     }
