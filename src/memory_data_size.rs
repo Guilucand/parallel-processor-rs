@@ -100,7 +100,6 @@ macro_rules! implement_measurement {
 ///
 /// # Example
 ///
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug)]
 pub struct MemoryDataSize {
     /// Number of octets

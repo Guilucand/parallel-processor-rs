@@ -6,7 +6,7 @@ use filebuffer::FileBuffer;
 use lazy_static::lazy_static;
 use nightly_quirks::utils::NightlyUtils;
 use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard, RawMutex};
-use parking_lot::{Mutex, RawRwLock, RwLock, RwLockReadGuard};
+use parking_lot::{Mutex, RawRwLock, RwLock};
 use replace_with::replace_with_or_abort;
 use std::cmp::min;
 use std::collections::BTreeMap;
@@ -40,31 +40,31 @@ pub enum OpenMode {
     Write,
 }
 
-struct RwLockIterator<'a, A, B, I: Iterator<Item = B>> {
-    _lock: RwLockReadGuard<'a, A>,
-    iterator: I,
-}
+// struct RwLockIterator<'a, A, B, I: Iterator<Item = B>> {
+//     _lock: RwLockReadGuard<'a, A>,
+//     iterator: I,
+// }
 
-impl<'a, A, B, I: Iterator<Item = B>> Iterator for RwLockIterator<'a, A, B, I> {
-    type Item = B;
+// impl<'a, A, B, I: Iterator<Item = B>> Iterator for RwLockIterator<'a, A, B, I> {
+//     type Item = B;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iterator.next()
-    }
-}
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.iterator.next()
+//     }
+// }
 
-pub struct MemoryFileChunksIterator<'a, I: Iterator<Item = &'a mut [u8]>> {
-    iter: I,
-}
+// pub struct MemoryFileChunksIterator<'a, I: Iterator<Item = &'a mut [u8]>> {
+//     iter: I,
+// }
 
-impl<'a, I: Iterator<Item = &'a mut [u8]>> Iterator for MemoryFileChunksIterator<'a, I> {
-    type Item = &'a mut [u8];
+// impl<'a, I: Iterator<Item = &'a mut [u8]>> Iterator for MemoryFileChunksIterator<'a, I> {
+//     type Item = &'a mut [u8];
 
-    #[inline(always)]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-}
+//     #[inline(always)]
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.iter.next()
+//     }
+// }
 
 pub enum FileChunk {
     OnDisk { offset: u64, len: usize },
