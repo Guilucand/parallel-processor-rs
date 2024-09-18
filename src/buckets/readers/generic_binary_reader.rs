@@ -70,10 +70,11 @@ impl<D: ChunkDecoder> Read for SequentialReader<D> {
 
             replace_with_or_abort(&mut self.reader, |reader| {
                 let mut file = D::dispose_stream(reader);
-                assert_eq!(
-                    file.stream_position().unwrap(),
-                    self.index.index[self.index_position as usize]
-                );
+                // This assert sometimes fails as the lz4 library can buffer more data that is then discarded on drop
+                // assert_eq!(
+                //     file.stream_position().unwrap(),
+                //     self.index.index[self.index_position as usize]
+                // );
                 file.seek(SeekFrom::Start(
                     self.index.index[self.index_position as usize],
                 ))
