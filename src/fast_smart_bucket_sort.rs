@@ -489,7 +489,7 @@ mod tests {
         }
         let mut vec2 = vec.clone();
 
-        println!("Starting...");
+        crate::log_info!("Starting...");
         let start = Instant::now();
 
         struct U16SortKey;
@@ -511,14 +511,14 @@ mod tests {
         fast_smart_radix_sort::<_, U16SortKey, true>(vec.as_mut_slice());
 
         let end = start.elapsed();
-        println!("Total time: {:.2?}", end);
+        crate::log_info!("Total time: {:.2?}", end);
 
-        println!("Starting2...");
+        crate::log_info!("Starting2...");
         let start = Instant::now();
 
         vec2.voracious_mt_sort(16);
         let end = start.elapsed();
-        println!("Total time 2: {:.2?}", end);
+        crate::log_info!("Total time 2: {:.2?}", end);
     }
 
     // #[test]
@@ -529,10 +529,10 @@ mod tests {
     //         .enumerate()
     //         .for_each(|(i, x)| *x = DataTypeStruct(thread_rng().gen(), [2; 32 - 16]));
     //
-    //     println!("Started sorting...");
+    //     crate::log_info!("Started sorting...");
     //     let start = Instant::now();
     //     fast_smart_radix_sort::<_, U64SortKey, true>(data.as_mut_slice());
-    //     println!("Done sorting => {:.2?}!", start.elapsed());
+    //     crate::log_info!("Done sorting => {:.2?}!", start.elapsed());
     //     assert!(data.is_sorted_by(|a, b| {
     //         Some(match a.cmp(b) {
     //             Ordering::Less => Ordering::Less,

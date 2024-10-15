@@ -295,9 +295,11 @@ impl ChunksAllocator {
 
         self.chunks.lock().extend(chunks_iter);
 
-        println!(
+        crate::log_info!(
             "Allocator initialized: mem: {} chunks: {} log2: {}",
-            memory, chunks_count, chunks_log_size
+            memory,
+            chunks_count,
+            chunks_log_size
         );
     }
 
@@ -391,7 +393,7 @@ impl ChunksAllocator {
                         #[cfg(feature = "track-usage")]
                         {
                             MemoryFileInternal::debug_dump_files();
-                            println!(
+                            crate::log_info!(
                                 "Usages: {:?}",
                                 USAGE_MAP
                                     .lock()
@@ -419,7 +421,7 @@ impl ChunksAllocator {
                                 .allocate_contiguous_chunk(extra_chunks_count, &mut buffers_list);
                             chunks_lock.extend(chunks_iter);
 
-                            println!(
+                            crate::log_info!(
                                 "Allocated {} extra chunks for temporary files ({})",
                                 extra_chunks_count,
                                 OUT_OF_MEMORY_ALLOCATION_SIZE * alloc_multiplier as f64
@@ -480,7 +482,7 @@ impl ChunksAllocator {
 
             counter += 1;
             if counter % 256 == 0 {
-                println!("WARNING: Cannot flush all the data!");
+                crate::log_warn!("WARNING: Cannot flush all the data!");
             }
 
             chunks = self.chunks.lock();

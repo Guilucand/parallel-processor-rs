@@ -173,7 +173,7 @@ impl MemoryFileInternal {
     pub fn debug_dump_files() {
         for file in MEMORY_MAPPED_FILES.iter() {
             let file = file.read();
-            println!(
+            crate::log_info!(
                 "File '{}' => chunks: {}",
                 file.path.display(),
                 file.memory.len()

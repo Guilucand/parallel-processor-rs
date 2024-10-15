@@ -12,9 +12,13 @@ pub mod buckets;
 pub mod debug_allocator;
 pub mod execution_manager;
 pub mod fast_smart_bucket_sort;
+#[macro_use]
+mod logging;
 pub mod memory_data_size;
 pub mod phase_times_monitor;
 pub mod utils;
+
+pub use logging::{set_logger_function, LogLevel};
 
 #[cfg(feature = "process-stats")]
 pub mod simple_process_stats;

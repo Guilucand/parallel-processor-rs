@@ -86,9 +86,9 @@ impl MemoryTrackerManager {
     pub fn print_debug(&self) {
         let _out = stdout().lock();
 
-        println!("Executors usages:");
+        crate::log_info!("Executors usages:");
         for executor in self.executors_sizes.iter() {
-            println!(
+            crate::log_info!(
                 "\t{} ==> {:.2} with {} instances [MAX {:.2}]",
                 Self::get_pretty_name(*executor.key()),
                 MemoryDataSize::from_bytes(executor.value().0 .0),
@@ -97,9 +97,9 @@ impl MemoryTrackerManager {
             );
         }
 
-        println!("Packets in queue:");
+        crate::log_info!("Packets in queue:");
         for packet in self.packet_sizes.iter() {
-            println!(
+            crate::log_info!(
                 "\t{} ==> {:.2} with {} instances [MAX {:.2}]",
                 Self::get_pretty_name(*packet.key()),
                 MemoryDataSize::from_bytes(packet.value().0 .0),

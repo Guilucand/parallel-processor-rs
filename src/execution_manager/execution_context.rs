@@ -240,7 +240,7 @@ impl ExecutionContext {
             .value()
             .clone();
         loop {
-            // println!(
+            // crate::log_info!(
             //     "Waiting for {} {}",
             //     std::any::type_name::<E>(),
             //     counter.load(Ordering::Relaxed)

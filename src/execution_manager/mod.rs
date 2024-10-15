@@ -66,7 +66,7 @@ mod tests {
                         for i in 0..100000000 {
                             x += i * x + i;
                         }
-                        println!("X: {}", x);
+                        crate::log_info!("X: {}", x);
 
                         tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -77,12 +77,12 @@ mod tests {
 
                             let mut packet = pool.alloc_packet().await;
                             *packet = exec + x;
-                            println!("Push packet {}", *packet.deref() * 2 + exec);
+                            crate::log_info!("Push packet {}", *packet.deref() * 2 + exec);
                             addr.packet_send(address.clone(), packet);
                         }
                     }
                 }
-                println!("Ended executor!");
+                crate::log_info!("Ended executor!");
             }
         }
     }

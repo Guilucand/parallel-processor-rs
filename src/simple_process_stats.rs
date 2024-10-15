@@ -12,7 +12,7 @@
 //! # #[tokio::main]
 //! # async fn main() {
 //! let process_stats = ProcessStats::get().expect("could not get stats for running process");
-//! println!("{:?}", process_stats);
+//! crate::log_info!("{:?}", process_stats);
 //! // ProcessStats {
 //! //     cpu_time_user: 421.875ms,
 //! //     cpu_time_kernel: 102.332ms,

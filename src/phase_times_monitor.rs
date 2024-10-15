@@ -148,7 +148,7 @@ impl PhaseTimesMonitor {
     fn end_phase(&mut self) {
         if let Some((name, phase_timer)) = self.phase.take() {
             let elapsed = phase_timer.elapsed();
-            println!(
+            crate::log_info!(
                 "Finished {}. phase duration: {:.2?} gtime: {:.2?}{}", // memory: {:.2} {:.2}%
                 name,
                 &elapsed,
@@ -164,9 +164,15 @@ impl PhaseTimesMonitor {
 
     pub fn start_phase(&mut self, name: String) {
         self.end_phase();
-        println!(
-            "Started {} prev stats: {}",
+        crate::log_info!(
+            "Started {}{}{}",
             name,
+            match () {
+                #[cfg(feature = "process-stats")]
+                () => "prev stats: ",
+                #[cfg(not(feature = "process-stats"))]
+                () => String::new(),
+            },
             Self::format_process_stats()
         );
         #[cfg(feature = "process-stats")]
@@ -246,12 +252,12 @@ impl PhaseTimesMonitor {
     pub fn print_stats(&mut self, end_message: String) {
         self.end_phase();
 
-        println!("{}", end_message);
-        println!("TOTAL TIME: {:.2?}", self.get_wallclock());
-        println!("Final stats:");
+        crate::log_info!("{}", end_message);
+        crate::log_info!("TOTAL TIME: {:.2?}", self.get_wallclock());
+        crate::log_info!("Final stats:");
 
         for PhaseResult { name, time } in self.results.iter() {
-            println!("\t{} \t=> {:.2?}", name, time);
+            crate::log_info!("\t{} \t=> {:.2?}", name, time);
         }
     }
 }

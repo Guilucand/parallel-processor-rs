@@ -104,7 +104,7 @@ impl MemoryFs {
     }
 
     pub fn reduce_pressure() -> bool {
-        // println!("Reducing pressure!");
+        // crate::log_info!("Reducing pressure!");
         let (current, max_size) = GlobalFlush::global_queue_occupation();
         if current * 3 < max_size {
             let mut map_lock = SWAPPABLE_FILES.lock();
@@ -155,7 +155,7 @@ mod tests {
         let data = (0..3337).map(|x| (x % 256) as u8).collect::<Vec<u8>>();
 
         (0..400).into_par_iter().for_each(|i: u32| {
-            println!("Writing file {}", i);
+            crate::log_info!("Writing file {}", i);
             let mut file = FileWriter::create(
                 format!("/home/andrea/genome-assembly/test1234/{}.tmp", i),
                 MemoryFileMode::PreferMemory { swap_priority: 3 },
@@ -179,7 +179,7 @@ mod tests {
         GlobalFlush::flush_to_disk();
 
         (0..400).into_par_iter().for_each(|i: u32| {
-            println!("Reading file {}", i);
+            crate::log_info!("Reading file {}", i);
             let mut datar = vec![0; 3337];
             let mut file = FileReader::open(
                 format!("/home/andrea/genome-assembly/test1234/{}.tmp", i),
@@ -191,7 +191,7 @@ mod tests {
                 assert_eq!(datar, data);
             }
             assert_eq!(file.read(datar.as_mut_slice()).unwrap(), 0);
-            println!("Read file {}", i);
+            crate::log_info!("Read file {}", i);
         });
 
         MemoryFs::terminate();
