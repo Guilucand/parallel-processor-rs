@@ -86,14 +86,19 @@ impl FileWriter {
         }
     }
 
-    /// Appends atomically all the buffer to the file, returning the start position of the buffer in the file
-    pub fn write_all_parallel(&self, buf: &[u8], el_size: usize) -> u64 {
+    /// Appends atomically all the data to the file, returning the start position of the written data in the file
+    pub fn write_all_parallel(&self, data: &[u8], el_size: usize) -> u64 {
         let buffer = self.current_buffer.read();
-        if let Some(chunk_position) = buffer.write_bytes_noextend(buf) {
+        if let Some(chunk_position) = buffer.write_bytes_noextend(data) {
             self.file_length.load(Ordering::Relaxed) + chunk_position
         } else {
             drop(buffer);
             let mut buffer = self.current_buffer.write();
+
+            // Check if now the buffer can be written
+            if let Some(chunk_position) = buffer.write_bytes_noextend(data) {
+                return self.file_length.load(Ordering::Relaxed) + chunk_position;
+            }
 
             let mut temp_vec = Vec::new();
 
@@ -107,21 +112,21 @@ impl FileWriter {
                     &self.file,
                     buffer,
                     &mut temp_vec,
-                    buf.len(),
+                    data.len(),
                     el_size,
                 );
                 new_buffer
             });
 
-            // Add the completely filled chunks to the file, removing the last size as it is already used
+            // Add the completely filled chunks to the file, removing the last size as the current chunk is not counted yet in the file_length
             self.file_length
-                .fetch_add((buf.len() - buffer.len()) as u64, Ordering::SeqCst);
+                .fetch_add((data.len() - buffer.len()) as u64, Ordering::SeqCst);
 
             let _buffer_read = RwLockWriteGuard::downgrade(buffer);
 
             let mut offset = 0;
             for (_lock, part) in temp_vec.drain(..) {
-                part.copy_from_slice(&buf[offset..(offset + part.len())]);
+                part.copy_from_slice(&data[offset..(offset + part.len())]);
                 offset += part.len();
             }
 
