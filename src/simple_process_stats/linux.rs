@@ -1,5 +1,5 @@
 use super::{Error, ProcessStats};
-use procfs::process::Stat;
+use procfs::{process::Stat, FromRead};
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -17,8 +17,7 @@ pub fn get_info() -> Result<ProcessStats, Error> {
         .map_err(|e| Error::FileRead(path.to_path_buf(), e))?;
 
     let readable_string = Cursor::new(file_contents);
-    let stat_file =
-        Stat::from_reader(readable_string).map_err(|_e| Error::FileContentsMalformed)?;
+    let stat_file = Stat::from_read(readable_string).map_err(|_e| Error::FileContentsMalformed)?;
 
     let memory_usage_bytes = (stat_file.rss as u64) * (bytes_per_page as u64);
     let user_mode_seconds = (stat_file.utime as f64) / (ticks_per_second as f64);

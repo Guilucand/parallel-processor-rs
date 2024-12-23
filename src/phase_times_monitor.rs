@@ -169,7 +169,7 @@ impl PhaseTimesMonitor {
             name,
             match () {
                 #[cfg(feature = "process-stats")]
-                () => "prev stats: ",
+                () => " prev stats: ",
                 #[cfg(not(feature = "process-stats"))]
                 () => String::new(),
             },
