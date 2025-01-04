@@ -3,9 +3,10 @@ use crate::buckets::readers::compressed_binary_reader::CompressedBinaryReader;
 use crate::buckets::readers::lock_free_binary_reader::LockFreeBinaryReader;
 use crate::memory_fs::RemoveFileMode;
 use crossbeam::channel::*;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, RwLock};
 use std::cmp::min;
 use std::io::Read;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -206,24 +207,27 @@ impl Drop for AsyncStreamThreadReader {
     }
 }
 
-#[derive(Clone)]
 pub struct AsyncBinaryReader {
     path: PathBuf,
-    opened_file: OpenedFile,
+    opened_file: RwLock<OpenedFile>,
+
+    compressed: bool,
+    remove_file: RemoveFileMode,
+    prefetch: Option<usize>,
 }
 
 impl AsyncBinaryReader {
-    pub fn new(
+    fn open_file(
         path: &PathBuf,
         compressed: bool,
         remove_file: RemoveFileMode,
         prefetch: Option<usize>,
-    ) -> Self {
-        let opened_file = if compressed {
+    ) -> OpenedFile {
+        if compressed {
             OpenedFile::Compressed(Arc::new(CompressedBinaryReader::new(
                 path,
                 remove_file,
-                prefetch,
+                None,
             )))
         } else {
             OpenedFile::Plain(Arc::new(LockFreeBinaryReader::new(
@@ -231,16 +235,36 @@ impl AsyncBinaryReader {
                 remove_file,
                 prefetch,
             )))
-        };
+        }
+    }
 
+    pub fn new(
+        path: &PathBuf,
+        compressed: bool,
+        remove_file: RemoveFileMode,
+        prefetch: Option<usize>,
+    ) -> Self {
         Self {
             path: path.clone(),
-            opened_file,
+            opened_file: RwLock::new(OpenedFile::None),
+            compressed,
+            remove_file,
+            prefetch,
         }
     }
 
     pub fn get_chunks_count(&self) -> usize {
-        match &self.opened_file {
+        let tmp_file;
+        let opened_file = &self.opened_file.read();
+        let file = match opened_file.deref() {
+            OpenedFile::None => {
+                tmp_file = Self::open_file(&self.path, self.compressed, RemoveFileMode::Keep, None);
+                &tmp_file
+            }
+            file => file,
+        };
+
+        match file {
             OpenedFile::None => 0,
             OpenedFile::Plain(file) => file.get_chunks_count(),
             OpenedFile::Compressed(file) => file.get_chunks_count(),
@@ -248,7 +272,17 @@ impl AsyncBinaryReader {
     }
 
     pub fn get_file_size(&self) -> usize {
-        match &self.opened_file {
+        let tmp_file;
+        let opened_file = &self.opened_file.read();
+        let file = match opened_file.deref() {
+            OpenedFile::None => {
+                tmp_file = Self::open_file(&self.path, self.compressed, RemoveFileMode::Keep, None);
+                &tmp_file
+            }
+            file => file,
+        };
+
+        match file {
             OpenedFile::None => 0,
             OpenedFile::Plain(file) => file.get_length(),
             OpenedFile::Compressed(file) => file.get_length(),
@@ -258,7 +292,7 @@ impl AsyncBinaryReader {
 
 impl AsyncBinaryReader {
     pub fn is_finished(&self) -> bool {
-        match &self.opened_file {
+        match self.opened_file.read().deref() {
             OpenedFile::None => true,
             OpenedFile::Plain(f) => f.is_finished(),
             OpenedFile::Compressed(f) => f.is_finished(),
@@ -271,7 +305,12 @@ impl AsyncBinaryReader {
         buffer: S::ReadBuffer,
         extra_buffer: S::ExtraDataBuffer,
     ) -> AsyncBinaryReaderItemsIterator<S> {
-        let stream = read_thread.read_bucket(self.opened_file.clone());
+        if matches!(self.opened_file.read().deref(), OpenedFile::None) {
+            *self.opened_file.write() =
+                Self::open_file(&self.path, self.compressed, self.remove_file, self.prefetch);
+        }
+
+        let stream = read_thread.read_bucket(self.opened_file.read().clone());
         AsyncBinaryReaderItemsIterator {
             buffer,
             extra_buffer,

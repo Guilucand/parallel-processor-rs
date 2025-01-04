@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const LOCK_FREE_BUCKET_MAGIC: &[u8; 16] = b"PLAIN_INTR_BKT_M";
 
+#[derive(Clone)]
 pub struct LockFreeCheckpointSize(u8);
 impl LockFreeCheckpointSize {
     pub const fn new_from_size(size: MemoryDataSize) -> Self {

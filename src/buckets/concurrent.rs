@@ -31,12 +31,12 @@ pub struct BucketsThreadDispatcher<B: LockFreeBucket, S: BucketItemSerializer> {
 
 impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
     pub fn new(mtb: &Arc<MultiThreadBuckets<B>>, thread_data: BucketsThreadBuffer) -> Self {
-        assert_eq!(mtb.buckets.len(), thread_data.buffers.len());
+        assert_eq!(mtb.active_buckets.len(), thread_data.buffers.len());
         Self {
             mtb: mtb.clone(),
             thread_data,
             drop_panic: PanicOnDrop::new("buckets thread dispatcher not finalized"),
-            serializers: (0..mtb.buckets.len()).map(|_| S::new()).collect(),
+            serializers: (0..mtb.active_buckets.len()).map(|_| S::new()).collect(),
         }
     }
 
