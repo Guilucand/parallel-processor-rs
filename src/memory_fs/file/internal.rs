@@ -3,24 +3,23 @@ use crate::memory_fs::file::flush::GlobalFlush;
 use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
 use dashmap::DashMap;
 use filebuffer::FileBuffer;
-use lazy_static::lazy_static;
 use nightly_quirks::utils::NightlyUtils;
+use once_cell::sync::Lazy;
 use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard, RawMutex};
 use parking_lot::{Mutex, RawRwLock, RwLock};
 use replace_with::replace_with_or_abort;
 use std::cmp::min;
 use std::collections::BTreeMap;
-use std::fs::{remove_file, File, OpenOptions};
-use std::io::Write;
+use std::fs::remove_file;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
-lazy_static! {
-    static ref MEMORY_MAPPED_FILES: DashMap<PathBuf, Arc<RwLock<MemoryFileInternal>>> =
-        DashMap::new();
-}
+use super::handle::FileHandle;
+
+static MEMORY_MAPPED_FILES: Lazy<DashMap<PathBuf, Arc<RwLock<MemoryFileInternal>>>> =
+    Lazy::new(|| DashMap::new());
 
 pub static SWAPPABLE_FILES: Mutex<
     Option<BTreeMap<(usize, PathBuf), Weak<RwLock<MemoryFileInternal>>>>,
@@ -109,7 +108,7 @@ pub enum UnderlyingFile {
     MemoryOnly,
     MemoryPreferred,
     WriteMode {
-        file: Arc<(PathBuf, Mutex<File>)>,
+        file: Arc<Mutex<FileHandle>>,
         chunk_position: usize,
     },
     ReadMode(Option<FileBuffer>),
@@ -252,19 +251,7 @@ impl MemoryFileInternal {
         let _ = remove_file(path);
 
         UnderlyingFile::WriteMode {
-            file: Arc::new((
-                path.to_path_buf(),
-                Mutex::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .append(false)
-                        // .custom_flags(O_DIRECT)
-                        .open(path)
-                        .map_err(|e| format!("Error while opening file {}: {}", path.display(), e))
-                        .unwrap(),
-                ),
-            )),
+            file: Arc::new(Mutex::new(FileHandle::new(path.to_path_buf()))),
             chunk_position: 0,
         }
     }
@@ -280,6 +267,7 @@ impl MemoryFileInternal {
         }
 
         {
+            let mut error = None;
             replace_with_or_abort(&mut self.file, |file| {
                 match mode {
                     OpenMode::None => UnderlyingFile::NotOpened,
@@ -296,10 +284,20 @@ impl MemoryFileInternal {
                             }
 
                             if let UnderlyingFile::WriteMode { file, .. } = file {
-                                file.1.lock().flush().unwrap();
+                                file.lock().flush().unwrap();
                             }
 
-                            UnderlyingFile::ReadMode(FileBuffer::open(&self.path).ok())
+                            UnderlyingFile::ReadMode(
+                                FileBuffer::open(&self.path)
+                                    .inspect_err(|e| {
+                                        error = Some(format!(
+                                            "Error while opening file {}: {}",
+                                            self.path.display(),
+                                            e
+                                        ));
+                                    })
+                                    .ok(),
+                            )
                         }
                     }
                     OpenMode::Write => {
@@ -314,6 +312,9 @@ impl MemoryFileInternal {
                     }
                 }
             });
+            if let Some(error) = error {
+                return Err(error);
+            }
         }
 
         Ok(())
@@ -326,7 +327,7 @@ impl MemoryFileInternal {
             self.open_mode.0 = OpenMode::None;
             match &self.file {
                 UnderlyingFile::WriteMode { file, .. } => {
-                    file.1.lock().flush().unwrap();
+                    file.lock().flush().unwrap();
                 }
                 _ => {}
             }

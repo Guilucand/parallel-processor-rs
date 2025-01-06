@@ -6,13 +6,13 @@ use mt_debug_counters::counter::{AtomicCounter, AtomicCounterGuardSum, MaxMode, 
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{Mutex, RwLock};
 use std::cmp::max;
-use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::DerefMut;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+use super::handle::FileHandle;
 
 static mut GLOBAL_FLUSH_QUEUE: Option<Sender<FlushableItem>> = None;
 static FLUSH_THREADS: Mutex<Vec<JoinHandle<()>>> =
@@ -65,7 +65,8 @@ impl GlobalFlush {
 
         while let Ok(file_to_flush) = flush_channel_receiver.recv() {
             // Here it's held an exclusive lock to ensure that sequential writes to a file are not processed concurrently
-            let mut file_lock = file_to_flush.underlying_file.1.lock();
+            let mut file_lock = file_to_flush.underlying_file.lock();
+            let mut file = file_lock.get_file();
             let _writing_check = WRITING_CHECK.read();
             drop(queue_take_lock);
 
@@ -78,9 +79,9 @@ impl GlobalFlush {
                         GLOBAL_QUEUE_MAX_SIZE_NOW.max(flush_channel_receiver.len() as i64);
                         COUNTER_DISK_FLUSHES.inc();
 
-                        let offset = file_lock.stream_position().unwrap();
+                        let offset = file.stream_position().unwrap();
 
-                        file_lock.write_all(chunk.get()).unwrap();
+                        file.write_all(chunk.get()).unwrap();
                         let len = chunk.len();
                         *file_chunk = FileChunk::OnDisk { offset, len };
                         COUNTER_BYTES_WRITTEN.inc_by(len as i64);
@@ -92,13 +93,14 @@ impl GlobalFlush {
 
                     COUNTER_DISK_FLUSHES.inc();
                     let _stat = AtomicCounterGuardSum::new(&COUNTER_WRITE_AT, 1);
-                    file_lock.seek(SeekFrom::Start(offset)).unwrap();
-                    file_lock.write_all(buffer.get()).unwrap();
+                    file.seek(SeekFrom::Start(offset)).unwrap();
+                    file.write_all(buffer.get()).unwrap();
                     COUNTER_BYTES_WRITTEN.inc_by(buffer.get().len() as i64);
                 }
             }
 
             drop(_writing_check);
+            drop(file);
             drop(file_lock);
             // Try lock the queue again
             queue_take_lock = TAKE_FROM_QUEUE_MUTEX.lock();
@@ -127,11 +129,7 @@ impl GlobalFlush {
         }
     }
 
-    pub fn schedule_disk_write(
-        file: Arc<(PathBuf, Mutex<File>)>,
-        buffer: AllocatedChunk,
-        offset: u64,
-    ) {
+    pub fn schedule_disk_write(file: Arc<Mutex<FileHandle>>, buffer: AllocatedChunk, offset: u64) {
         Self::add_item_to_flush_queue(FlushableItem {
             underlying_file: file,
             mode: FileFlushMode::WriteAt { buffer, offset },

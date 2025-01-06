@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::any::Any;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
@@ -13,9 +13,9 @@ struct ThreadVarRef {
 unsafe impl Sync for ThreadVarRef {}
 unsafe impl Send for ThreadVarRef {}
 
-lazy_static! {
-    static ref THREADS_MAP: DashMap<u64, DashMap<ThreadId, ThreadVarRef>> = DashMap::new();
-}
+static THREADS_MAP: Lazy<DashMap<u64, DashMap<ThreadId, ThreadVarRef>>> =
+    Lazy::new(|| DashMap::new());
+
 static THREAD_LOCAL_VAR_INDEX: AtomicU64 = AtomicU64::new(0);
 
 pub struct ThreadLocalVariable<T: 'static> {

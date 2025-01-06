@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::to_string_pretty;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -42,10 +42,8 @@ struct AllocationInfoWritable {
     total_count: usize,
 }
 
-lazy_static! {
-    static ref ALLOCATION_INFOS: DashMap<String, AllocationInfo> = DashMap::new();
-    static ref ADDRESSES_BACKTRACE: DashMap<usize, String> = DashMap::new();
-}
+static ALLOCATION_INFOS: Lazy<DashMap<String, AllocationInfo>> = Lazy::new(|| DashMap::new());
+static ADDRESSES_BACKTRACE: Lazy<DashMap<usize, String>> = Lazy::new(|| DashMap::new());
 
 pub fn debug_print_allocations(dir: impl AsRef<Path>, period: Duration) {
     let dir = dir.as_ref().to_path_buf();

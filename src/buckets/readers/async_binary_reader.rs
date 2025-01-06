@@ -3,7 +3,7 @@ use crate::buckets::readers::compressed_binary_reader::CompressedBinaryReader;
 use crate::buckets::readers::lock_free_binary_reader::LockFreeBinaryReader;
 use crate::memory_fs::RemoveFileMode;
 use crossbeam::channel::*;
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Condvar, Mutex, RwLock, RwLockWriteGuard};
 use std::cmp::min;
 use std::io::Read;
 use std::ops::Deref;
@@ -12,11 +12,42 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use super::BucketReader;
+
 #[derive(Clone)]
 enum OpenedFile {
-    None,
+    NotOpened,
     Plain(Arc<LockFreeBinaryReader>),
     Compressed(Arc<CompressedBinaryReader>),
+    Finished,
+}
+
+impl OpenedFile {
+    pub fn is_finished(&self) -> bool {
+        match self {
+            OpenedFile::NotOpened => false,
+            OpenedFile::Finished => true,
+            OpenedFile::Plain(f) => f.is_finished(),
+            OpenedFile::Compressed(f) => f.is_finished(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn get_path(&self) -> PathBuf {
+        match self {
+            OpenedFile::Plain(f) => f.get_name(),
+            OpenedFile::Compressed(f) => f.get_name(),
+            _ => panic!("File not opened"),
+        }
+    }
+
+    pub fn get_chunks_count(&self) -> usize {
+        match self {
+            OpenedFile::Plain(file) => file.get_chunks_count(),
+            OpenedFile::Compressed(file) => file.get_chunks_count(),
+            OpenedFile::NotOpened | OpenedFile::Finished => 0,
+        }
+    }
 }
 
 pub struct AsyncReaderThread {
@@ -41,7 +72,7 @@ impl AsyncReaderThread {
         Arc::new(Self {
             buffers: bounded(buffers_count),
             buffers_pool,
-            opened_file: Mutex::new(OpenedFile::None),
+            opened_file: Mutex::new(OpenedFile::Finished),
             file_wait_condvar: Condvar::new(),
             thread: Mutex::new(None),
         })
@@ -59,7 +90,7 @@ impl AsyncReaderThread {
             }
 
             let bytes_read = match &mut *file {
-                OpenedFile::None => {
+                OpenedFile::NotOpened | OpenedFile::Finished => {
                     self.file_wait_condvar
                         .wait_for(&mut file, Duration::from_secs(5));
                     let _ = self.buffers_pool.0.send(buffer);
@@ -111,7 +142,7 @@ impl AsyncReaderThread {
 
             // File completely read
             if bytes_read == 0 {
-                *file = OpenedFile::None;
+                *file = OpenedFile::Finished;
             }
 
             let _ = self.buffers.0.send(buffer);
@@ -120,9 +151,11 @@ impl AsyncReaderThread {
 
     fn read_bucket(self: Arc<Self>, new_opened_file: OpenedFile) -> AsyncStreamThreadReader {
         let mut opened_file = self.opened_file.lock();
+
+        // Ensure that the previous file is finished
         match &*opened_file {
-            OpenedFile::None => {}
-            _ => panic!("File already opened!"),
+            OpenedFile::Finished => {}
+            _ => panic!("File not finished!"),
         }
 
         *opened_file = new_opened_file;
@@ -210,7 +243,6 @@ impl Drop for AsyncStreamThreadReader {
 pub struct AsyncBinaryReader {
     path: PathBuf,
     opened_file: RwLock<OpenedFile>,
-
     compressed: bool,
     remove_file: RemoveFileMode,
     prefetch: Option<usize>,
@@ -246,7 +278,7 @@ impl AsyncBinaryReader {
     ) -> Self {
         Self {
             path: path.clone(),
-            opened_file: RwLock::new(OpenedFile::None),
+            opened_file: RwLock::new(OpenedFile::NotOpened),
             compressed,
             remove_file,
             prefetch,
@@ -257,25 +289,21 @@ impl AsyncBinaryReader {
         let tmp_file;
         let opened_file = &self.opened_file.read();
         let file = match opened_file.deref() {
-            OpenedFile::None => {
+            OpenedFile::NotOpened | OpenedFile::Finished => {
                 tmp_file = Self::open_file(&self.path, self.compressed, RemoveFileMode::Keep, None);
                 &tmp_file
             }
             file => file,
         };
 
-        match file {
-            OpenedFile::None => 0,
-            OpenedFile::Plain(file) => file.get_chunks_count(),
-            OpenedFile::Compressed(file) => file.get_chunks_count(),
-        }
+        file.get_chunks_count()
     }
 
     pub fn get_file_size(&self) -> usize {
         let tmp_file;
         let opened_file = &self.opened_file.read();
         let file = match opened_file.deref() {
-            OpenedFile::None => {
+            OpenedFile::NotOpened | OpenedFile::Finished => {
                 tmp_file = Self::open_file(&self.path, self.compressed, RemoveFileMode::Keep, None);
                 &tmp_file
             }
@@ -283,20 +311,16 @@ impl AsyncBinaryReader {
         };
 
         match file {
-            OpenedFile::None => 0,
             OpenedFile::Plain(file) => file.get_length(),
             OpenedFile::Compressed(file) => file.get_length(),
+            OpenedFile::NotOpened | OpenedFile::Finished => 0,
         }
     }
 }
 
 impl AsyncBinaryReader {
     pub fn is_finished(&self) -> bool {
-        match self.opened_file.read().deref() {
-            OpenedFile::None => true,
-            OpenedFile::Plain(f) => f.is_finished(),
-            OpenedFile::Compressed(f) => f.is_finished(),
-        }
+        self.opened_file.read().is_finished()
     }
 
     pub fn get_items_stream<S: BucketItemSerializer>(
@@ -305,12 +329,18 @@ impl AsyncBinaryReader {
         buffer: S::ReadBuffer,
         extra_buffer: S::ExtraDataBuffer,
     ) -> AsyncBinaryReaderItemsIterator<S> {
-        if matches!(self.opened_file.read().deref(), OpenedFile::None) {
-            *self.opened_file.write() =
-                Self::open_file(&self.path, self.compressed, self.remove_file, self.prefetch);
+        let mut opened_file = self.opened_file.read();
+        if matches!(*self.opened_file.read(), OpenedFile::NotOpened) {
+            drop(opened_file);
+            let mut writable = self.opened_file.write();
+            if matches!(*writable, OpenedFile::NotOpened) {
+                *writable =
+                    Self::open_file(&self.path, self.compressed, self.remove_file, self.prefetch);
+            }
+            opened_file = RwLockWriteGuard::downgrade(writable);
         }
 
-        let stream = read_thread.read_bucket(self.opened_file.read().clone());
+        let stream = read_thread.read_bucket(opened_file.clone());
         AsyncBinaryReaderItemsIterator {
             buffer,
             extra_buffer,

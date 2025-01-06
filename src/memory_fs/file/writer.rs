@@ -56,11 +56,12 @@ impl FileWriter {
                         if let UnderlyingFile::WriteMode { file, .. } =
                             file_read.get_underlying_file()
                         {
-                            let mut disk_file_lock = file.1.lock();
-                            let position = disk_file_lock.stream_position().unwrap();
-                            disk_file_lock.seek(SeekFrom::Start(0)).unwrap();
-                            disk_file_lock.write_all(data).unwrap();
-                            disk_file_lock.seek(SeekFrom::Start(position)).unwrap();
+                            let mut disk_file_lock = file.lock();
+                            let mut disk_file = disk_file_lock.get_file();
+                            let position = disk_file.stream_position().unwrap();
+                            disk_file.seek(SeekFrom::Start(0)).unwrap();
+                            disk_file.write_all(data).unwrap();
+                            disk_file.seek(SeekFrom::Start(position)).unwrap();
                             Ok(())
                         } else {
                             Err(())

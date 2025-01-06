@@ -1,17 +1,15 @@
-use std::fs::File;
-
 use crate::memory_fs::allocator::AllocatedChunk;
 use crate::memory_fs::file::internal::FileChunk;
 use parking_lot::lock_api::ArcRwLockWriteGuard;
 use parking_lot::{Mutex, RawRwLock};
-use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::file::handle::FileHandle;
+
 pub struct FlushableItem {
-    pub underlying_file: Arc<(PathBuf, Mutex<File>)>,
+    pub underlying_file: Arc<Mutex<FileHandle>>,
     pub mode: FileFlushMode,
 }
-
 pub enum FileFlushMode {
     Append {
         chunk: ArcRwLockWriteGuard<RawRwLock, FileChunk>,
