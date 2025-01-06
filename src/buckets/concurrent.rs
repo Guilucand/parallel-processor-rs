@@ -4,6 +4,8 @@ use crate::memory_data_size::MemoryDataSize;
 use crate::utils::panic_on_drop::PanicOnDrop;
 use std::sync::Arc;
 
+use super::ChunkingStatus;
+
 pub struct BucketsThreadBuffer {
     buffers: Vec<Vec<u8>>,
 }
@@ -47,13 +49,14 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
         extra_data: &S::ExtraData,
         extra_data_buffer: &S::ExtraDataBuffer,
         element: &S::InputElementType<'_>,
-    ) {
+    ) -> ChunkingStatus {
         let bucket_buf = &mut self.thread_data.buffers[bucket as usize];
+        let mut chunking_status = ChunkingStatus::SameChunk;
         if self.serializers[bucket as usize].get_size(element, extra_data) + bucket_buf.len()
             > bucket_buf.capacity()
             && bucket_buf.len() > 0
         {
-            self.mtb.add_data(bucket, bucket_buf.as_slice());
+            chunking_status = self.mtb.add_data(bucket, bucket_buf.as_slice());
             bucket_buf.clear();
             self.serializers[bucket as usize].reset();
         }
@@ -63,6 +66,7 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
             extra_data,
             extra_data_buffer,
         );
+        chunking_status
     }
 
     #[inline]

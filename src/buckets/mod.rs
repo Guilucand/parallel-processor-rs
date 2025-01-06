@@ -20,6 +20,42 @@ pub trait LockFreeBucket {
     fn finalize(self);
 }
 
+#[derive(Debug, Clone)]
+pub struct MultiChunkBucket {
+    pub index: usize,
+    pub chunks: Vec<PathBuf>,
+}
+
+impl MultiChunkBucket {
+    pub fn into_single(mut self) -> SingleBucket {
+        assert!(self.chunks.len() == 1);
+        SingleBucket {
+            index: self.index,
+            path: self.chunks.pop().unwrap(),
+        }
+    }
+}
+
+pub struct SingleBucket {
+    pub index: usize,
+    pub path: PathBuf,
+}
+
+impl SingleBucket {
+    pub fn to_multi_chunk(self) -> MultiChunkBucket {
+        MultiChunkBucket {
+            index: self.index,
+            chunks: vec![self.path],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ChunkingStatus {
+    SameChunk,
+    NewChunks { bucket_indexes: Vec<u16> },
+}
+
 pub struct MultiThreadBuckets<B: LockFreeBucket> {
     active_buckets: Vec<ArcSwap<(AtomicU64, B)>>,
     stored_buckets: Mutex<Vec<Vec<PathBuf>>>,
@@ -66,6 +102,10 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         }
     }
 
+    pub fn get_stored_buckets(&self) -> &Mutex<Vec<Vec<PathBuf>>> {
+        &self.stored_buckets
+    }
+
     pub fn into_buckets(mut self) -> impl Iterator<Item = B> {
         assert!(
             self.stored_buckets
@@ -84,7 +124,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         self.active_buckets[bucket as usize].load().1.get_path()
     }
 
-    pub fn add_data(&self, index: u16, data: &[u8]) {
+    pub fn add_data(&self, index: u16, data: &[u8]) -> ChunkingStatus {
         let bucket_guard = self.active_buckets[index as usize].load();
         bucket_guard.1.write_data(data);
 
@@ -101,6 +141,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
 
         // If the disk usage limit is set, check if the disk usage is not exceeded
         if let Some(max_usage) = self.active_disk_usage_limit {
+            let mut new_chunks_bucket_indexes = vec![];
             while disk_usage > max_usage.get() {
                 let mut buckets_count = self.bucket_count_lock.lock();
                 // Take the largest bucket and add it to the stored buckets
@@ -139,8 +180,15 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                 self.stored_buckets.lock()[swap_bucket_index].push(stored_bucket.get_path());
                 stored_bucket.finalize();
 
+                new_chunks_bucket_indexes.push(swap_bucket_index as u16);
+
                 *buckets_count += 1;
             }
+            ChunkingStatus::NewChunks {
+                bucket_indexes: new_chunks_bucket_indexes,
+            }
+        } else {
+            ChunkingStatus::SameChunk
         }
     }
 
@@ -148,19 +196,22 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         self.active_buckets.len()
     }
 
-    pub fn finalize_single(self: Arc<Self>) -> Vec<PathBuf> {
+    pub fn finalize_single(self: Arc<Self>) -> Vec<SingleBucket> {
         assert!(self.active_disk_usage_limit.is_none());
         let buckets = self.finalize();
         buckets
             .into_iter()
             .map(|mut bucket| {
-                assert!(bucket.len() == 1);
-                bucket.pop().unwrap()
+                assert!(bucket.chunks.len() == 1);
+                SingleBucket {
+                    index: bucket.index,
+                    path: bucket.chunks.pop().unwrap(),
+                }
             })
             .collect()
     }
 
-    pub fn finalize(self: Arc<Self>) -> Vec<Vec<PathBuf>> {
+    pub fn finalize(self: Arc<Self>) -> Vec<MultiChunkBucket> {
         let mut self_ = Arc::try_unwrap(self)
             .unwrap_or_else(|_| panic!("Cannot take full ownership of multi thread buckets!"));
 
@@ -170,11 +221,15 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
             .active_buckets
             .drain(..)
             .zip(stored_buckets.drain(..))
-            .map(|(bucket, mut stored)| {
+            .enumerate()
+            .map(|(index, (bucket, mut stored))| {
                 let bucket = Arc::into_inner(bucket.into_inner()).unwrap();
                 stored.push(bucket.1.get_path());
                 bucket.1.finalize();
-                stored
+                MultiChunkBucket {
+                    index,
+                    chunks: stored,
+                }
             })
             .collect()
     }
