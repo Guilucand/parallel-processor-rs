@@ -20,6 +20,7 @@ pub const O_DIRECT: i32 = 0x4000;
 pub mod allocator;
 pub mod file;
 pub mod flushable_buffer;
+pub(crate) mod stats;
 
 static mut FILES_FLUSH_HASH_MAP: Option<Mutex<HashMap<PathBuf, Vec<Arc<(PathBuf, Mutex<File>)>>>>> =
     None;
@@ -101,6 +102,14 @@ impl MemoryFs {
     pub fn terminate() {
         GlobalFlush::terminate();
         CHUNKS_ALLOCATOR.deinitialize();
+    }
+
+    pub fn get_stats() -> stats::MemoryFsStats {
+        stats::get_stats()
+    }
+
+    pub fn stats_reset() {
+        stats::reset();
     }
 
     pub fn reduce_pressure() -> bool {

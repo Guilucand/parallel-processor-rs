@@ -1,6 +1,7 @@
 use crate::memory_fs::allocator::AllocatedChunk;
 use crate::memory_fs::file::internal::FileChunk;
 use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
+use crate::memory_fs::stats;
 use crossbeam::channel::*;
 use mt_debug_counters::counter::{AtomicCounter, AtomicCounterGuardSum, MaxMode, SumMode};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
@@ -82,6 +83,9 @@ impl GlobalFlush {
                         let offset = file.stream_position().unwrap();
 
                         file.write_all(chunk.get()).unwrap();
+
+                        stats::add_disk_usage(chunk.len() as u64);
+
                         let len = chunk.len();
                         *file_chunk = FileChunk::OnDisk { offset, len };
                         COUNTER_BYTES_WRITTEN.inc_by(len as i64);

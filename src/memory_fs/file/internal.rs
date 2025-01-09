@@ -1,6 +1,7 @@
 use crate::memory_fs::allocator::{AllocatedChunk, CHUNKS_ALLOCATOR};
 use crate::memory_fs::file::flush::GlobalFlush;
 use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
+use crate::memory_fs::stats;
 use dashmap::DashMap;
 use filebuffer::FileBuffer;
 use nightly_quirks::utils::NightlyUtils;
@@ -210,6 +211,7 @@ impl MemoryFileInternal {
 
     pub fn delete(path: impl AsRef<Path>, remove_fs: bool) -> bool {
         if let Some(file) = MEMORY_MAPPED_FILES.remove(path.as_ref()) {
+            stats::decrease_files_usage(file.1.read().len() as u64);
             if remove_fs {
                 match file.1.read().memory_mode {
                     MemoryFileMode::AlwaysMemory => {}
@@ -220,6 +222,9 @@ impl MemoryFileInternal {
                         .remove(&(swap_priority, path.as_ref().to_path_buf()));
                     }
                     MemoryFileMode::DiskOnly => {
+                        if let Ok(file_meta) = std::fs::metadata(path.as_ref()) {
+                            stats::decrease_disk_usage(file_meta.len());
+                        }
                         let _ = remove_file(path);
                     }
                 }

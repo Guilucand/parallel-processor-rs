@@ -1,12 +1,12 @@
-use crate::memory_fs::allocator::CHUNKS_ALLOCATOR;
+use crate::{
+    memory_data_size::MemoryDataSize,
+    memory_fs::{allocator::CHUNKS_ALLOCATOR, MemoryFs},
+};
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::RwLock;
 use std::time::{Duration, Instant};
 #[cfg(feature = "process-stats")]
-use {
-    crate::memory_data_size::MemoryDataSize, nightly_quirks::utils::NightlyUtils,
-    parking_lot::Mutex, std::cmp::max,
-};
+use {nightly_quirks::utils::NightlyUtils, parking_lot::Mutex, std::cmp::max};
 
 pub struct PhaseResult {
     name: String,
@@ -254,6 +254,16 @@ impl PhaseTimesMonitor {
 
         crate::log_info!("{}", end_message);
         crate::log_info!("TOTAL TIME: {:.2?}", self.get_wallclock());
+        let fs_stats = MemoryFs::get_stats();
+
+        crate::log_info!(
+            "Max virtual fs usage: {:.2}",
+            MemoryDataSize::from_bytes(fs_stats.max_files_usage as usize),
+        );
+        crate::log_info!(
+            "Max disk usage: {:.2}",
+            MemoryDataSize::from_bytes(fs_stats.max_disk_usage as usize)
+        );
         crate::log_info!("Final stats:");
 
         for PhaseResult { name, time } in self.results.iter() {

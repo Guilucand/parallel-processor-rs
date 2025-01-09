@@ -2,6 +2,7 @@ use crate::memory_fs::allocator::{AllocatedChunk, CHUNKS_ALLOCATOR};
 use crate::memory_fs::file::internal::{
     FileChunk, MemoryFileInternal, MemoryFileMode, OpenMode, UnderlyingFile,
 };
+use crate::memory_fs::stats;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
@@ -89,6 +90,9 @@ impl FileWriter {
 
     /// Appends atomically all the data to the file, returning the start position of the written data in the file
     pub fn write_all_parallel(&self, data: &[u8], el_size: usize) -> u64 {
+        // Update stats
+        stats::add_files_usage(data.len() as u64);
+
         let buffer = self.current_buffer.read();
         if let Some(chunk_position) = buffer.write_bytes_noextend(data) {
             self.file_length.load(Ordering::Relaxed) + chunk_position
