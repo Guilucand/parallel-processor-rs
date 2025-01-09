@@ -6,6 +6,7 @@ use crate::memory_fs::{MemoryFs, RemoveFileMode};
 use desse::Desse;
 use desse::DesseSized;
 use replace_with::replace_with_or_abort;
+use serde::de::DeserializeOwned;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -24,6 +25,7 @@ pub struct GenericChunkedBinaryReader<D: ChunkDecoder> {
     parallel_reader: FileReader,
     parallel_index: AtomicU64,
     file_path: PathBuf,
+    format_data_info: Vec<u8>,
 }
 
 unsafe impl<D: ChunkDecoder> Sync for GenericChunkedBinaryReader<D> {}
@@ -130,7 +132,12 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
             parallel_index: AtomicU64::new(0),
             remove_file,
             file_path: name.as_ref().to_path_buf(),
+            format_data_info: header.data_format_info.to_vec(),
         }
+    }
+
+    pub fn get_data_format_info<T: DeserializeOwned>(&self) -> T {
+        bincode::deserialize(&self.format_data_info).unwrap()
     }
 
     pub fn get_length(&self) -> usize {

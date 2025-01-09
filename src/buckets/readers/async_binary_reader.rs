@@ -4,6 +4,7 @@ use crate::buckets::readers::lock_free_binary_reader::LockFreeBinaryReader;
 use crate::memory_fs::RemoveFileMode;
 use crossbeam::channel::*;
 use parking_lot::{Condvar, Mutex, RwLock, RwLockWriteGuard};
+use serde::de::DeserializeOwned;
 use std::cmp::min;
 use std::io::Read;
 use std::ops::Deref;
@@ -285,7 +286,7 @@ impl AsyncBinaryReader {
         }
     }
 
-    pub fn get_chunks_count(&self) -> usize {
+    fn with_opened_file<T>(&self, f: impl FnOnce(&OpenedFile) -> T) -> T {
         let tmp_file;
         let opened_file = &self.opened_file.read();
         let file = match opened_file.deref() {
@@ -295,26 +296,27 @@ impl AsyncBinaryReader {
             }
             file => file,
         };
+        f(file)
+    }
 
-        file.get_chunks_count()
+    pub fn get_data_format_info<T: DeserializeOwned>(&self) -> Option<T> {
+        self.with_opened_file(|file| match file {
+            OpenedFile::Plain(file) => Some(file.get_data_format_info()),
+            OpenedFile::Compressed(file) => Some(file.get_data_format_info()),
+            OpenedFile::NotOpened | OpenedFile::Finished => None,
+        })
+    }
+
+    pub fn get_chunks_count(&self) -> usize {
+        self.with_opened_file(|file| file.get_chunks_count())
     }
 
     pub fn get_file_size(&self) -> usize {
-        let tmp_file;
-        let opened_file = &self.opened_file.read();
-        let file = match opened_file.deref() {
-            OpenedFile::NotOpened | OpenedFile::Finished => {
-                tmp_file = Self::open_file(&self.path, self.compressed, RemoveFileMode::Keep, None);
-                &tmp_file
-            }
-            file => file,
-        };
-
-        match file {
+        self.with_opened_file(|file| match file {
             OpenedFile::Plain(file) => file.get_length(),
             OpenedFile::Compressed(file) => file.get_length(),
             OpenedFile::NotOpened | OpenedFile::Finished => 0,
-        }
+        })
     }
 }
 
@@ -330,7 +332,7 @@ impl AsyncBinaryReader {
         extra_buffer: S::ExtraDataBuffer,
     ) -> AsyncBinaryReaderItemsIterator<S> {
         let mut opened_file = self.opened_file.read();
-        if matches!(*self.opened_file.read(), OpenedFile::NotOpened) {
+        if matches!(*opened_file, OpenedFile::NotOpened) {
             drop(opened_file);
             let mut writable = self.opened_file.write();
             if matches!(*writable, OpenedFile::NotOpened) {

@@ -54,11 +54,11 @@ pub struct ExecutorReceiver<E: AsyncExecutor> {
 }
 
 impl<E: AsyncExecutor> ExecutorReceiver<E> {
-    pub async fn obtain_address(
-        &mut self,
-    ) -> Result<(ExecutorAddressOperations<E>, Arc<E::InitData>), ()> {
-        self.obtain_address_with_priority(0).await
-    }
+    // pub async fn obtain_address(
+    //     &mut self,
+    // ) -> Result<(ExecutorAddressOperations<E>, Arc<E::InitData>), ()> {
+    //     self.obtain_address_with_priority(0).await
+    // }
 
     pub async fn obtain_address_with_priority(
         &mut self,

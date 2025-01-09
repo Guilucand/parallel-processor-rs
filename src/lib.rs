@@ -16,6 +16,7 @@ pub mod fast_smart_bucket_sort;
 mod logging;
 pub mod memory_data_size;
 pub mod phase_times_monitor;
+pub mod scheduler;
 pub mod utils;
 
 pub use logging::{set_logger_function, LogLevel};

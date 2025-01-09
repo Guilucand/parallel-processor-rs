@@ -1,4 +1,6 @@
-use crate::buckets::writers::{finalize_bucket_file, initialize_bucket_file, THREADS_BUSY_WRITING};
+use crate::buckets::writers::{
+    finalize_bucket_file, initialize_bucket_file, BucketHeader, THREADS_BUSY_WRITING,
+};
 use crate::buckets::LockFreeBucket;
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::file::internal::MemoryFileMode;
@@ -27,6 +29,7 @@ pub struct LockFreeBinaryWriter {
     checkpoint_max_size_log2: u8,
     checkpoints: Mutex<Vec<u64>>,
     file_size: AtomicU64,
+    data_format_info: Vec<u8>,
 }
 unsafe impl Send for LockFreeBinaryWriter {}
 
@@ -38,11 +41,17 @@ impl LockFreeBinaryWriter {
 impl LockFreeBucket for LockFreeBinaryWriter {
     type InitData = (MemoryFileMode, LockFreeCheckpointSize);
 
-    fn new(
+    fn new_serialized_data_format(
         path_prefix: &Path,
         (file_mode, checkpoint_max_size): &(MemoryFileMode, LockFreeCheckpointSize),
         index: usize,
+        data_format_info: &[u8],
     ) -> Self {
+        assert!(
+            data_format_info.len() <= BucketHeader::MAX_DATA_FORMAT_INFO_SIZE,
+            "Serialized data format info is too big, this is a bug"
+        );
+
         let path = path_prefix.parent().unwrap().join(format!(
             "{}.{}",
             path_prefix.file_name().unwrap().to_str().unwrap(),
@@ -58,6 +67,7 @@ impl LockFreeBucket for LockFreeBinaryWriter {
             checkpoint_max_size_log2: checkpoint_max_size.0,
             checkpoints: Mutex::new(vec![first_checkpoint]),
             file_size: AtomicU64::new(0),
+            data_format_info: data_format_info.to_vec(),
         }
     }
 
@@ -83,11 +93,16 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         self.writer.get_path()
     }
     fn finalize(self) {
-        finalize_bucket_file(self.writer, LOCK_FREE_BUCKET_MAGIC, {
-            let mut checkpoints = self.checkpoints.into_inner();
-            checkpoints.sort();
-            checkpoints.dedup();
-            checkpoints
-        });
+        finalize_bucket_file(
+            self.writer,
+            LOCK_FREE_BUCKET_MAGIC,
+            {
+                let mut checkpoints = self.checkpoints.into_inner();
+                checkpoints.sort();
+                checkpoints.dedup();
+                checkpoints
+            },
+            &self.data_format_info,
+        );
     }
 }

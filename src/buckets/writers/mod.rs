@@ -14,6 +14,11 @@ pub(crate) static THREADS_BUSY_WRITING: AtomicCounter<SumMode> =
 pub(crate) struct BucketHeader {
     pub magic: [u8; 16],
     pub index_offset: u64,
+    pub data_format_info: [u8; Self::MAX_DATA_FORMAT_INFO_SIZE],
+}
+
+impl BucketHeader {
+    pub const MAX_DATA_FORMAT_INFO_SIZE: usize = 32;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -29,15 +34,27 @@ pub(crate) fn initialize_bucket_file(file: &mut FileWriter) -> u64 {
     file.len() as u64
 }
 
-pub(crate) fn finalize_bucket_file(mut file: FileWriter, magic: &[u8; 16], checkpoints: Vec<u64>) {
+pub(crate) fn finalize_bucket_file(
+    mut file: FileWriter,
+    magic: &[u8; 16],
+    checkpoints: Vec<u64>,
+    format_info: &[u8],
+) {
     file.flush().unwrap();
     let index_position = file.len() as u64;
     bincode::serialize_into(&mut file, &BucketCheckpoints { index: checkpoints }).unwrap();
+
+    let data_format_info = {
+        let mut array = [0; 32];
+        array[0..format_info.len()].copy_from_slice(format_info);
+        array
+    };
 
     file.write_at_start(
         &BucketHeader {
             magic: *magic,
             index_offset: index_position,
+            data_format_info,
         }
         .serialize()[..],
     )

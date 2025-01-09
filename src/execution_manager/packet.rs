@@ -2,6 +2,7 @@ use crate::execution_manager::async_channel::AsyncChannel;
 use crate::execution_manager::memory_tracker::MemoryTrackerManager;
 use crate::execution_manager::objects_pool::{ObjectsPool, PoolObjectTrait};
 use std::any::Any;
+use std::cell::UnsafeCell;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +34,7 @@ impl<T: Send + Sync + PacketTrait + 'static> PacketPoolReturnerTrait
 pub struct Packet<T: 'static> {
     object: ManuallyDrop<Box<T>>,
     returner: Option<Arc<dyn PacketPoolReturnerTrait>>,
+    _not_sync: std::marker::PhantomData<UnsafeCell<()>>,
 }
 
 pub struct PacketAny {
@@ -79,6 +81,7 @@ impl<T: PacketTrait> PacketsPool<T> {
         let packet = Packet {
             object: ManuallyDrop::new(unsafe { ManuallyDrop::take(&mut object.value) }),
             returner: Some(self.returner.clone()),
+            _not_sync: std::marker::PhantomData,
         };
 
         unsafe {
@@ -99,6 +102,7 @@ impl<T: PacketTrait> PacketsPool<T> {
         let packet = Packet {
             object: ManuallyDrop::new(unsafe { ManuallyDrop::take(&mut object.value) }),
             returner: Some(self.returner.clone()),
+            _not_sync: std::marker::PhantomData,
         };
 
         unsafe {
@@ -123,6 +127,7 @@ impl<T: Any + Send + Sync> Packet<T> {
         Packet {
             object: ManuallyDrop::new(Box::new(data)),
             returner: None,
+            _not_sync: std::marker::PhantomData,
         }
     }
 
@@ -165,6 +170,7 @@ impl PacketAny {
                 ManuallyDrop::take(&mut self.object).downcast().unwrap()
             }),
             returner: self.returner.clone(),
+            _not_sync: std::marker::PhantomData,
         };
 
         unsafe {

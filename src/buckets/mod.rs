@@ -1,5 +1,6 @@
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
+use serde::Serialize;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,10 +12,30 @@ pub mod readers;
 pub mod single;
 pub mod writers;
 
-pub trait LockFreeBucket {
+pub trait LockFreeBucket: Sized {
     type InitData: Clone;
 
-    fn new(path: &Path, data: &Self::InitData, index: usize) -> Self;
+    fn new_serialized_data_format(
+        path: &Path,
+        data: &Self::InitData,
+        index: usize,
+        data_format: &[u8],
+    ) -> Self;
+
+    fn new<T: Serialize>(
+        path: &Path,
+        data: &Self::InitData,
+        index: usize,
+        data_format: &T,
+    ) -> Self {
+        Self::new_serialized_data_format(
+            path,
+            data,
+            index,
+            &bincode::serialize(data_format).unwrap(),
+        )
+    }
+
     fn write_data(&self, bytes: &[u8]);
     fn get_path(&self) -> PathBuf;
     fn finalize(self);
@@ -24,6 +45,7 @@ pub trait LockFreeBucket {
 pub struct MultiChunkBucket {
     pub index: usize,
     pub chunks: Vec<PathBuf>,
+    pub was_compacted: bool,
 }
 
 impl MultiChunkBucket {
@@ -46,6 +68,7 @@ impl SingleBucket {
         MultiChunkBucket {
             index: self.index,
             chunks: vec![self.path],
+            was_compacted: false,
         }
     }
 }
@@ -58,12 +81,13 @@ pub enum ChunkingStatus {
 
 pub struct MultiThreadBuckets<B: LockFreeBucket> {
     active_buckets: Vec<ArcSwap<(AtomicU64, B)>>,
-    stored_buckets: Mutex<Vec<Vec<PathBuf>>>,
+    stored_buckets: Mutex<Vec<MultiChunkBucket>>,
     disk_usage: AtomicU64,
     active_disk_usage_limit: Option<NonZeroU64>,
     bucket_count_lock: Mutex<usize>,
     base_path: Option<PathBuf>,
     init_data: Option<B::InitData>,
+    serialized_format_info: Vec<u8>,
 }
 
 impl<B: LockFreeBucket> MultiThreadBuckets<B> {
@@ -75,6 +99,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         bucket_count_lock: Mutex::new(0),
         base_path: None,
         init_data: None,
+        serialized_format_info: vec![],
     };
 
     pub fn new(
@@ -82,27 +107,37 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         path: PathBuf,
         active_disk_usage_limit: Option<u64>,
         init_data: &B::InitData,
+        format_info: &impl Serialize,
     ) -> MultiThreadBuckets<B> {
         let mut buckets = Vec::with_capacity(size);
 
         for i in 0..size {
             buckets.push(ArcSwap::from_pointee((
                 AtomicU64::new(0),
-                B::new(&path, init_data, i),
+                B::new(&path, init_data, i, format_info),
             )));
         }
         MultiThreadBuckets {
             active_buckets: buckets,
-            stored_buckets: Mutex::new(vec![vec![]; size]),
+            stored_buckets: Mutex::new(
+                (0..size)
+                    .map(|index| MultiChunkBucket {
+                        index,
+                        chunks: vec![],
+                        was_compacted: false,
+                    })
+                    .collect(),
+            ),
             disk_usage: AtomicU64::new(0),
             active_disk_usage_limit: active_disk_usage_limit.map(NonZeroU64::new).flatten(),
             bucket_count_lock: Mutex::new(size),
             base_path: Some(path),
             init_data: Some(init_data.clone()),
+            serialized_format_info: bincode::serialize(format_info).unwrap(),
         }
     }
 
-    pub fn get_stored_buckets(&self) -> &Mutex<Vec<Vec<PathBuf>>> {
+    pub fn get_stored_buckets(&self) -> &Mutex<Vec<MultiChunkBucket>> {
         &self.stored_buckets
     }
 
@@ -111,7 +146,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
             self.stored_buckets
                 .lock()
                 .iter()
-                .all(|bucket| bucket.is_empty())
+                .all(|bucket| bucket.chunks.is_empty())
                 && self.active_disk_usage_limit.is_none()
         );
         let buckets = std::mem::take(&mut self.active_buckets);
@@ -155,10 +190,11 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
 
                 let mut stored_bucket = self.active_buckets[swap_bucket_index].swap(Arc::new((
                     AtomicU64::new(0),
-                    B::new(
+                    B::new_serialized_data_format(
                         &self.base_path.as_deref().unwrap(),
                         &self.init_data.as_ref().unwrap(),
                         *buckets_count,
+                        &self.serialized_format_info,
                     ),
                 )));
 
@@ -177,7 +213,9 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                 // Add the bucket to the stored buckets and clear its active usage
                 disk_usage =
                     self.disk_usage.fetch_sub(bucket_usage, Ordering::Relaxed) - bucket_usage;
-                self.stored_buckets.lock()[swap_bucket_index].push(stored_bucket.get_path());
+                self.stored_buckets.lock()[swap_bucket_index]
+                    .chunks
+                    .push(stored_bucket.get_path());
                 stored_bucket.finalize();
 
                 new_chunks_bucket_indexes.push(swap_bucket_index as u16);
@@ -221,15 +259,11 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
             .active_buckets
             .drain(..)
             .zip(stored_buckets.drain(..))
-            .enumerate()
-            .map(|(index, (bucket, mut stored))| {
+            .map(|(bucket, mut stored)| {
                 let bucket = Arc::into_inner(bucket.into_inner()).unwrap();
-                stored.push(bucket.1.get_path());
+                stored.chunks.push(bucket.1.get_path());
                 bucket.1.finalize();
-                MultiChunkBucket {
-                    index,
-                    chunks: stored,
-                }
+                stored
             })
             .collect()
     }

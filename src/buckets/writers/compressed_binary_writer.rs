@@ -12,6 +12,8 @@ use replace_with::replace_with_or_abort;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use super::BucketHeader;
+
 pub const COMPRESSED_BUCKET_MAGIC: &[u8; 16] = b"CPLZ4_INTR_BKT_M";
 
 #[derive(Clone)]
@@ -49,6 +51,7 @@ struct CompressedBinaryWriterInternal {
     checkpoints: Vec<u64>,
     current_chunk_size: u64,
     level: CompressionLevelInfo,
+    data_format_info: Vec<u8>,
 }
 
 pub struct CompressedBinaryWriter {
@@ -90,7 +93,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
         CompressionLevelInfo,
     );
 
-    fn new(
+    fn new_serialized_data_format(
         path_prefix: &Path,
         (file_mode, checkpoint_max_size, compression_level): &(
             MemoryFileMode,
@@ -98,7 +101,13 @@ impl LockFreeBucket for CompressedBinaryWriter {
             CompressionLevelInfo,
         ),
         index: usize,
+        data_format_info: &[u8],
     ) -> Self {
+        assert!(
+            data_format_info.len() <= BucketHeader::MAX_DATA_FORMAT_INFO_SIZE,
+            "Serialized data format info is too big, this is a bug"
+        );
+
         let path = path_prefix.parent().unwrap().join(format!(
             "{}.{}",
             path_prefix.file_name().unwrap().to_str().unwrap(),
@@ -118,6 +127,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
                 checkpoints: vec![first_checkpoint],
                 current_chunk_size: 0,
                 level: *compression_level,
+                data_format_info: data_format_info.to_vec(),
             }),
             path,
         }
@@ -147,6 +157,11 @@ impl LockFreeBucket for CompressedBinaryWriter {
         let (file, res) = inner.writer.finish();
         res.unwrap();
 
-        finalize_bucket_file(file, COMPRESSED_BUCKET_MAGIC, inner.checkpoints);
+        finalize_bucket_file(
+            file,
+            COMPRESSED_BUCKET_MAGIC,
+            inner.checkpoints,
+            &inner.data_format_info,
+        );
     }
 }
