@@ -10,14 +10,14 @@ pub enum LogLevel {
 #[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => {
-        crate::logging::log(crate::logging::LogLevel::Info, format!($($arg)*));
+        crate::logging::log(crate::logging::LogLevel::Info, format!($($arg)*))
     };
 }
 
 #[macro_export]
 macro_rules! log_warn {
     ($($arg:tt)*) => {
-        crate::logging::log(crate::logging::LogLevel::Warning, format!($($arg)*));
+        crate::logging::log(crate::logging::LogLevel::Warning, format!($($arg)*))
     };
 }
 

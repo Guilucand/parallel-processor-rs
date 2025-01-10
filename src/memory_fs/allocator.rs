@@ -45,7 +45,7 @@ pub struct AllocatedChunk {
     max_len_log2: usize,
     dealloc_fn: fn(usize, usize),
     #[cfg(feature = "track-usage")]
-    usage: ChunkUsage_,
+    _usage: ChunkUsage_,
 }
 unsafe impl Sync for AllocatedChunk {}
 unsafe impl Send for AllocatedChunk {}
@@ -64,7 +64,7 @@ impl AllocatedChunk {
         max_len_log2: 0,
         dealloc_fn: |_, _| {},
         #[cfg(feature = "track-usage")]
-        usage: ChunkUsage_::TemporarySpace,
+        _usage: ChunkUsage_::TemporarySpace,
     };
 
     #[inline(always)]
@@ -197,7 +197,7 @@ unsafe impl Sync for ChunksAllocator {}
 unsafe impl Send for ChunksAllocator {}
 
 #[cfg(feature = "track-usage")]
-static USAGE_MAP: Mutex<Option<HashMap<ChunkUsage_, usize>>> =
+static USAGE_MAP: Mutex<Option<std::collections::HashMap<ChunkUsage_, usize>>> =
     Mutex::const_new(parking_lot::RawMutex::INIT, None);
 
 impl ChunksAllocator {
@@ -263,7 +263,7 @@ impl ChunksAllocator {
 
         #[cfg(feature = "track-usage")]
         {
-            *USAGE_MAP.lock() = Some(HashMap::new());
+            *USAGE_MAP.lock() = Some(std::collections::HashMap::new());
         }
 
         chunks_log_size = min(
@@ -366,7 +366,7 @@ impl ChunksAllocator {
                 len: AtomicUsize::new(0),
                 max_len_log2: self.chunks_log_size.load(Ordering::Relaxed),
                 #[cfg(feature = "track-usage")]
-                usage: usage.clone(),
+                _usage: usage.clone(),
                 dealloc_fn: |ptr, _size_log2| {
                     CHUNKS_ALLOCATOR.chunks.lock().push(ptr);
                     CHUNKS_ALLOCATOR.chunks_wait_condvar.notify_one();
@@ -392,7 +392,7 @@ impl ChunksAllocator {
                     if tries_count > 10 {
                         #[cfg(feature = "track-usage")]
                         {
-                            MemoryFileInternal::debug_dump_files();
+                            super::file::internal::MemoryFileInternal::debug_dump_files();
                             crate::log_info!(
                                 "Usages: {:?}",
                                 USAGE_MAP

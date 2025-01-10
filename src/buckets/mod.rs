@@ -213,10 +213,11 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                 // Add the bucket to the stored buckets and clear its active usage
                 disk_usage =
                     self.disk_usage.fetch_sub(bucket_usage, Ordering::Relaxed) - bucket_usage;
+                let bucket_path = stored_bucket.get_path();
+                stored_bucket.finalize();
                 self.stored_buckets.lock()[swap_bucket_index]
                     .chunks
-                    .push(stored_bucket.get_path());
-                stored_bucket.finalize();
+                    .push(bucket_path);
 
                 new_chunks_bucket_indexes.push(swap_bucket_index as u16);
 
