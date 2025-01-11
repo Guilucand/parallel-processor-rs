@@ -535,11 +535,11 @@ pub struct AsyncBinaryReaderItemsIterator<S: BucketItemSerializer, const ALLOW_P
 pub enum AsyncBinaryReaderIteratorData<'a, S: BucketItemSerializer> {
     Stream(
         &'a mut AsyncBinaryReaderItemsIteratorCheckpoint<S, true>,
-        Option<S::ChunkData>,
+        Option<S::CheckpointData>,
     ),
     Passtrough {
         file_range: std::ops::Range<u64>,
-        checkpoint_data: Option<S::ChunkData>,
+        checkpoint_data: Option<S::CheckpointData>,
     },
 }
 
@@ -566,7 +566,7 @@ impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S, false> {
         &mut self,
     ) -> Option<(
         &mut AsyncBinaryReaderItemsIteratorCheckpoint<S, false>,
-        Option<S::ChunkData>,
+        Option<S::CheckpointData>,
     )> {
         let info = self.stream.get_checkpoint_info_and_reset_reader()?;
         Some(match info {

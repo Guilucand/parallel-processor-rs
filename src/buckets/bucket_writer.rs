@@ -12,7 +12,7 @@ pub trait BucketItemSerializer {
     type ExtraDataBuffer;
     type ReadType<'a>;
 
-    type ChunkData: Serialize + DeserializeOwned;
+    type CheckpointData: Serialize + DeserializeOwned;
 
     /// Creates a new instance
     fn new() -> Self;
@@ -44,7 +44,7 @@ impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
     type ReadBuffer = [u8; SIZE];
     type ReadType<'a> = &'a [u8; SIZE];
 
-    type ChunkData = ();
+    type CheckpointData = ();
 
     #[inline(always)]
     fn new() -> Self {
@@ -89,7 +89,7 @@ impl BucketItemSerializer for BytesSliceSerializer {
     type ReadBuffer = ();
     type ReadType<'a> = ();
 
-    type ChunkData = ();
+    type CheckpointData = ();
 
     #[inline(always)]
     fn new() -> Self {

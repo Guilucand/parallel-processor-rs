@@ -233,16 +233,16 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
 
     pub fn decode_bucket_items_parallel<
         S: BucketItemSerializer,
-        F: for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer, Option<&S::ChunkData>),
+        F: for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer, Option<&S::CheckpointData>),
     >(
         &self,
         mut buffer: S::ReadBuffer,
         mut extra_buffer: S::ExtraDataBuffer,
         checkpoint_strategy: CheckpointStrategy,
         mut func: F,
-    ) -> Option<DecodeItemsStatus<S::ChunkData>> {
+    ) -> Option<DecodeItemsStatus<S::CheckpointData>> {
         let stream = match self
-            .get_read_parallel_stream_with_chunk_type::<S::ChunkData>(checkpoint_strategy)
+            .get_read_parallel_stream_with_chunk_type::<S::CheckpointData>(checkpoint_strategy)
         {
             None => return None,
             Some(stream) => stream,
