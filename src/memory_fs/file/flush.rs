@@ -82,7 +82,15 @@ impl GlobalFlush {
 
                         let offset = file.stream_position().unwrap();
 
-                        file.write_all(chunk.get()).unwrap();
+                        file.write_all(chunk.get())
+                            .map_err(|e| {
+                                format!(
+                                    "Error while writing file: '{}' => {}",
+                                    file_lock.get_path().display(),
+                                    e
+                                )
+                            })
+                            .unwrap();
 
                         stats::add_disk_usage(chunk.len() as u64);
 

@@ -27,7 +27,7 @@ static mut FILES_FLUSH_HASH_MAP: Option<Mutex<HashMap<PathBuf, Vec<Arc<(PathBuf,
 
 pub struct MemoryFs;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum RemoveFileMode {
     Keep,
     Remove { remove_fs: bool },

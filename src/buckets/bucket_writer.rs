@@ -3,12 +3,16 @@ use std::{
     marker::PhantomData,
 };
 
+use serde::{de::DeserializeOwned, Serialize};
+
 pub trait BucketItemSerializer {
     type InputElementType<'a>: ?Sized;
     type ExtraData;
     type ReadBuffer;
     type ExtraDataBuffer;
     type ReadType<'a>;
+
+    type ChunkData: Serialize + DeserializeOwned;
 
     /// Creates a new instance
     fn new() -> Self;
@@ -39,6 +43,8 @@ impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
     type ExtraDataBuffer = ();
     type ReadBuffer = [u8; SIZE];
     type ReadType<'a> = &'a [u8; SIZE];
+
+    type ChunkData = ();
 
     #[inline(always)]
     fn new() -> Self {
@@ -82,6 +88,8 @@ impl BucketItemSerializer for BytesSliceSerializer {
     type ExtraDataBuffer = ();
     type ReadBuffer = ();
     type ReadType<'a> = ();
+
+    type ChunkData = ();
 
     #[inline(always)]
     fn new() -> Self {

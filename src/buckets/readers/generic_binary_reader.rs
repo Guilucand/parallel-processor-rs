@@ -1,6 +1,7 @@
 use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::readers::BucketReader;
 use crate::buckets::writers::{BucketCheckpoints, BucketHeader};
+use crate::buckets::CheckpointStrategy;
 use crate::memory_fs::file::reader::FileReader;
 use crate::memory_fs::{MemoryFs, RemoveFileMode};
 use desse::Desse;
@@ -8,6 +9,7 @@ use desse::DesseSized;
 use replace_with::replace_with_or_abort;
 use serde::de::DeserializeOwned;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -28,6 +30,22 @@ pub struct GenericChunkedBinaryReader<D: ChunkDecoder> {
     format_data_info: Vec<u8>,
 }
 
+pub enum ChunkReader<T, R> {
+    Reader(R, Option<T>),
+    Passtrough {
+        file_range: Range<u64>,
+        data: Option<T>,
+    },
+}
+
+pub enum DecodeItemsStatus<T> {
+    Decompressed,
+    Passtrough {
+        file_range: Range<u64>,
+        data: Option<T>,
+    },
+}
+
 unsafe impl<D: ChunkDecoder> Sync for GenericChunkedBinaryReader<D> {}
 
 struct SequentialReader<D: ChunkDecoder> {
@@ -44,9 +62,10 @@ impl<D: ChunkDecoder> SequentialReader<D> {
         index: usize,
     ) -> u64 {
         if checkpoints.index.len() > (index + 1) as usize {
-            checkpoints.index[(index + 1) as usize] - checkpoints.index[index as usize]
+            checkpoints.index[(index + 1) as usize].offset
+                - checkpoints.index[index as usize].offset
         } else {
-            last_byte_position - checkpoints.index[index as usize]
+            last_byte_position - checkpoints.index[index as usize].offset
         }
     }
 }
@@ -78,7 +97,7 @@ impl<D: ChunkDecoder> Read for SequentialReader<D> {
                 //     self.index.index[self.index_position as usize]
                 // );
                 file.seek(SeekFrom::Start(
-                    self.index.index[self.index_position as usize],
+                    self.index.index[self.index_position as usize].offset,
                 ))
                 .unwrap();
                 let size = SequentialReader::<D>::get_chunk_size(
@@ -117,7 +136,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         //     name.as_ref().display()
         // );
 
-        file.seek(SeekFrom::Start(index.index[0])).unwrap();
+        file.seek(SeekFrom::Start(index.index[0].offset)).unwrap();
 
         let size = SequentialReader::<D>::get_chunk_size(&index, header.index_offset, 0);
 
@@ -157,14 +176,37 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         &mut self.sequential_reader
     }
 
-    pub fn get_read_parallel_stream(&self) -> Option<impl Read> {
+    pub fn get_read_parallel_stream_with_chunk_type<T: DeserializeOwned>(
+        &self,
+        allowed_strategy: CheckpointStrategy,
+    ) -> Option<ChunkReader<T, D::ReaderType>> {
+        match self.get_read_parallel_stream(allowed_strategy) {
+            None => None,
+            Some(ChunkReader::Reader(stream, data)) => Some(ChunkReader::Reader(
+                stream,
+                data.map(|data| bincode::deserialize(&data).unwrap()),
+            )),
+            Some(ChunkReader::Passtrough { file_range, data }) => Some(ChunkReader::Passtrough {
+                file_range,
+                data: data.map(|data| bincode::deserialize(&data).unwrap()),
+            }),
+        }
+    }
+
+    pub fn get_read_parallel_stream(
+        &self,
+        allowed_strategy: CheckpointStrategy,
+    ) -> Option<ChunkReader<Vec<u8>, D::ReaderType>> {
         let index = self.parallel_index.fetch_add(1, Ordering::Relaxed) as usize;
 
         if index >= self.sequential_reader.index.index.len() {
             return None;
         }
 
-        let addr_start = self.sequential_reader.index.index[index] as usize;
+        let addr_start = self.sequential_reader.index.index[index].offset as usize;
+
+        let current_strategy = self.sequential_reader.index.index[index].strategy;
+        let checkpoint_data = self.sequential_reader.index.index[index].data.clone();
 
         let mut reader = self.parallel_reader.clone();
         reader.seek(SeekFrom::Start(addr_start as u64)).unwrap();
@@ -175,28 +217,52 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
             index,
         );
 
-        Some(D::decode_stream(reader, size))
+        match (allowed_strategy, current_strategy) {
+            (CheckpointStrategy::Decompress, _) | (_, CheckpointStrategy::Decompress) => Some(
+                ChunkReader::Reader(D::decode_stream(reader, size), checkpoint_data),
+            ),
+            (CheckpointStrategy::Passtrough, CheckpointStrategy::Passtrough) => {
+                reader.seek(SeekFrom::Start(addr_start as u64)).unwrap();
+                Some(ChunkReader::Passtrough {
+                    file_range: (addr_start as u64)..(addr_start as u64 + size),
+                    data: checkpoint_data,
+                })
+            }
+        }
     }
 
     pub fn decode_bucket_items_parallel<
         S: BucketItemSerializer,
-        F: for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer),
+        F: for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer, Option<&S::ChunkData>),
     >(
         &self,
         mut buffer: S::ReadBuffer,
         mut extra_buffer: S::ExtraDataBuffer,
+        checkpoint_strategy: CheckpointStrategy,
         mut func: F,
-    ) -> bool {
-        let mut stream = match self.get_read_parallel_stream() {
-            None => return false,
+    ) -> Option<DecodeItemsStatus<S::ChunkData>> {
+        let stream = match self
+            .get_read_parallel_stream_with_chunk_type::<S::ChunkData>(checkpoint_strategy)
+        {
+            None => return None,
             Some(stream) => stream,
         };
 
         let mut deserializer = S::new();
-        while let Some(el) = deserializer.read_from(&mut stream, &mut buffer, &mut extra_buffer) {
-            func(el, &mut extra_buffer);
+
+        match stream {
+            ChunkReader::Reader(mut stream, data) => {
+                while let Some(el) =
+                    deserializer.read_from(&mut stream, &mut buffer, &mut extra_buffer)
+                {
+                    func(el, &mut extra_buffer, data.as_ref());
+                }
+                Some(DecodeItemsStatus::Decompressed)
+            }
+            ChunkReader::Passtrough { file_range, data } => {
+                Some(DecodeItemsStatus::Passtrough { file_range, data })
+            }
         }
-        return true;
     }
 }
 

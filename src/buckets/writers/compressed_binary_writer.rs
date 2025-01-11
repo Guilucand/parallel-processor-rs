@@ -1,5 +1,5 @@
 use crate::buckets::writers::{finalize_bucket_file, initialize_bucket_file, THREADS_BUSY_WRITING};
-use crate::buckets::LockFreeBucket;
+use crate::buckets::{CheckpointData, CheckpointStrategy, LockFreeBucket};
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::file::flush::GlobalFlush;
 use crate::memory_fs::file::internal::MemoryFileMode;
@@ -9,6 +9,7 @@ use lz4::{BlockMode, BlockSize, ContentChecksum};
 use mt_debug_counters::counter::AtomicCounterGuardSum;
 use parking_lot::Mutex;
 use replace_with::replace_with_or_abort;
+use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -48,10 +49,13 @@ fn create_lz4_stream<W: Write>(writer: W, level: CompressionLevelInfo) -> lz4::E
 struct CompressedBinaryWriterInternal {
     writer: lz4::Encoder<FileWriter>,
     checkpoint_max_size: u64,
-    checkpoints: Vec<u64>,
+    checkpoints: Vec<CheckpointData>,
     current_chunk_size: u64,
     level: CompressionLevelInfo,
     data_format_info: Vec<u8>,
+
+    checkpoint_strategy: CheckpointStrategy,
+    checkpoint_data: Option<Vec<u8>>,
 }
 
 pub struct CompressedBinaryWriter {
@@ -67,7 +71,11 @@ impl CompressedBinaryWriterInternal {
             res.unwrap();
 
             let checkpoint_pos = file_buf.len();
-            self.checkpoints.push(checkpoint_pos as u64);
+            self.checkpoints.push(CheckpointData {
+                offset: checkpoint_pos as u64,
+                strategy: self.checkpoint_strategy,
+                data: self.checkpoint_data.clone(),
+            });
 
             create_lz4_stream(file_buf, self.level)
         });
@@ -124,13 +132,28 @@ impl LockFreeBucket for CompressedBinaryWriter {
             inner: Mutex::new(CompressedBinaryWriterInternal {
                 writer,
                 checkpoint_max_size: (1 << checkpoint_max_size.0),
-                checkpoints: vec![first_checkpoint],
+                checkpoints: vec![CheckpointData {
+                    offset: first_checkpoint,
+                    strategy: CheckpointStrategy::Decompress,
+                    data: None,
+                }],
                 current_chunk_size: 0,
                 level: *compression_level,
                 data_format_info: data_format_info.to_vec(),
+
+                checkpoint_strategy: CheckpointStrategy::Decompress,
+                checkpoint_data: None,
             }),
             path,
         }
+    }
+
+    fn set_checkpoint_data<T: Serialize>(&self, data: &T, strategy: CheckpointStrategy) {
+        let mut inner = self.inner.lock();
+        inner.checkpoint_data = Some(bincode::serialize(data).unwrap());
+        inner.checkpoint_strategy = strategy;
+        // Always create a new block on checkpoint data change
+        inner.create_new_block();
     }
 
     fn write_data(&self, bytes: &[u8]) {

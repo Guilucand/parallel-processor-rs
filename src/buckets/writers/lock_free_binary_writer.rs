@@ -1,13 +1,14 @@
 use crate::buckets::writers::{
     finalize_bucket_file, initialize_bucket_file, BucketHeader, THREADS_BUSY_WRITING,
 };
-use crate::buckets::LockFreeBucket;
+use crate::buckets::{CheckpointData, CheckpointStrategy, LockFreeBucket};
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::file::internal::MemoryFileMode;
 use crate::memory_fs::file::writer::FileWriter;
 use crate::utils::memory_size_to_log2;
 use mt_debug_counters::counter::AtomicCounterGuardSum;
 use parking_lot::Mutex;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,7 +28,10 @@ impl LockFreeCheckpointSize {
 pub struct LockFreeBinaryWriter {
     writer: FileWriter,
     checkpoint_max_size_log2: u8,
-    checkpoints: Mutex<Vec<u64>>,
+    checkpoints: Mutex<Vec<CheckpointData>>,
+    checkpoint_strategy: Mutex<CheckpointStrategy>,
+    checkpoint_data: Mutex<Option<Vec<u8>>>,
+
     file_size: AtomicU64,
     data_format_info: Vec<u8>,
 }
@@ -65,10 +69,30 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         Self {
             writer,
             checkpoint_max_size_log2: checkpoint_max_size.0,
-            checkpoints: Mutex::new(vec![first_checkpoint]),
+            checkpoints: Mutex::new(vec![CheckpointData {
+                offset: first_checkpoint,
+                strategy: CheckpointStrategy::Decompress,
+                data: None,
+            }]),
             file_size: AtomicU64::new(0),
             data_format_info: data_format_info.to_vec(),
+
+            checkpoint_strategy: Mutex::new(CheckpointStrategy::Decompress),
+            checkpoint_data: Mutex::new(None),
         }
+    }
+
+    fn set_checkpoint_data<T: Serialize>(&self, data: &T, strategy: CheckpointStrategy) {
+        let data = bincode::serialize(data).unwrap();
+        *self.checkpoint_data.lock() = Some(data.clone());
+        *self.checkpoint_strategy.lock() = strategy;
+        // Always create a new block on checkpoint data change
+        let position = self.writer.write_all_parallel(&[], 1);
+        self.checkpoints.lock().push(CheckpointData {
+            offset: position as u64,
+            strategy,
+            data: Some(data),
+        });
     }
 
     fn write_data(&self, bytes: &[u8]) {
@@ -83,7 +107,11 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         if old_size >> self.checkpoint_max_size_log2
             != (old_size + bytes.len() as u64) >> self.checkpoint_max_size_log2
         {
-            self.checkpoints.lock().push(position);
+            self.checkpoints.lock().push(CheckpointData {
+                offset: position as u64,
+                strategy: *self.checkpoint_strategy.lock(),
+                data: self.checkpoint_data.lock().clone(),
+            });
         }
 
         drop(stat_raii);

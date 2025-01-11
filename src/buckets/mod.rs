@@ -1,6 +1,6 @@
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,6 +11,34 @@ pub mod concurrent;
 pub mod readers;
 pub mod single;
 pub mod writers;
+
+/// This enum serves as a way to specifying the behavior of the
+/// bucket portions created after setting the checkpoint data.
+/// If set on passtrough there is the option to directly read binary data and copy it somewhere else
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CheckpointStrategy {
+    Decompress,
+    Passtrough,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CheckpointData {
+    offset: u64,
+    strategy: CheckpointStrategy,
+    data: Option<Vec<u8>>,
+}
+
+impl PartialOrd for CheckpointData {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.offset.partial_cmp(&other.offset)
+    }
+}
+
+impl Ord for CheckpointData {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.offset.cmp(&other.offset)
+    }
+}
 
 pub trait LockFreeBucket: Sized {
     type InitData: Clone;
@@ -35,6 +63,8 @@ pub trait LockFreeBucket: Sized {
             &bincode::serialize(data_format).unwrap(),
         )
     }
+
+    fn set_checkpoint_data<T: Serialize>(&self, data: &T, strategy: CheckpointStrategy);
 
     fn write_data(&self, bytes: &[u8]);
     fn get_path(&self) -> PathBuf;

@@ -95,3 +95,10 @@ impl FileHandle {
         }
     }
 }
+
+impl Drop for FileHandle {
+    fn drop(&mut self) {
+        // Close the file writer once the handle is dropped
+        OPENED_FILES.lock().remove(&self.path);
+    }
+}

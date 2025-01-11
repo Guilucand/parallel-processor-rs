@@ -4,6 +4,8 @@ use mt_debug_counters::counter::{AtomicCounter, SumMode};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
+use super::CheckpointData;
+
 pub mod compressed_binary_writer;
 pub mod lock_free_binary_writer;
 
@@ -23,7 +25,7 @@ impl BucketHeader {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct BucketCheckpoints {
-    pub index: Vec<u64>,
+    pub index: Vec<CheckpointData>,
 }
 
 pub(crate) fn initialize_bucket_file(file: &mut FileWriter) -> u64 {
@@ -37,7 +39,7 @@ pub(crate) fn initialize_bucket_file(file: &mut FileWriter) -> u64 {
 pub(crate) fn finalize_bucket_file(
     mut file: FileWriter,
     magic: &[u8; 16],
-    checkpoints: Vec<u64>,
+    checkpoints: Vec<CheckpointData>,
     format_info: &[u8],
 ) {
     file.flush().unwrap();

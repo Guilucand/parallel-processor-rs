@@ -33,6 +33,8 @@ impl<const LEN: usize> BucketItemSerializer for SortedDataSerializer<LEN> {
     type ReadBuffer = SortedData<LEN>;
     type ReadType<'a> = &'a SortedData<LEN>;
 
+    type ChunkData = ();
+
     #[inline(always)]
     fn new() -> Self {
         Self
