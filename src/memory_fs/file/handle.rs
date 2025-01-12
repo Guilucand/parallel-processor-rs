@@ -16,15 +16,13 @@ static MAX_OPENED_FILES: Lazy<usize> = Lazy::new(|| {
 
     let os_limit = match () {
         #[cfg(target_os = "linux")]
-        () => {
-            limits_rs::get_own_limits()
-                .map(|l| {
-                    l.max_open_files
-                        .soft
-                        .unwrap_or(l.max_open_files.hard.unwrap_or(DEFAULT_MAX_OPENED_FILES))
-                })
-                .unwrap_or(DEFAULT_MAX_OPENED_FILES) as usize;
-        }
+        () => limits_rs::get_own_limits()
+            .map(|l| {
+                l.max_open_files
+                    .soft
+                    .unwrap_or(l.max_open_files.hard.unwrap_or(DEFAULT_MAX_OPENED_FILES))
+            })
+            .unwrap_or(DEFAULT_MAX_OPENED_FILES) as usize,
         #[cfg(not(target_os = "linux"))]
         () => DEFAULT_MAX_OPENED_FILES as usize,
     };
