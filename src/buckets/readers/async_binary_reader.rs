@@ -140,13 +140,14 @@ impl AsyncReaderThread {
                 checkpoint_strategy: CheckpointStrategy,
                 cached_buffer: &mut Option<Vec<u8>>,
             ) -> Option<AsyncReaderBuffer> {
-                let mut last_read = usize::MAX;
                 let mut total_read_bytes = 0;
                 let mut checkpoint_data = None;
-                let is_continuation = stream.is_some();
+                let mut is_continuation = true;
 
                 let out_buffer = loop {
                     if stream.is_none() {
+                        is_continuation = false;
+
                         *stream = file.get_read_parallel_stream(checkpoint_strategy);
 
                         match &stream {
@@ -172,6 +173,8 @@ impl AsyncReaderThread {
                     let reader_stream = stream.as_mut().unwrap();
 
                     let out_buffer = cached_buffer.as_mut().unwrap();
+
+                    let mut last_read = usize::MAX;
                     while total_read_bytes < out_buffer.len() && last_read > 0 {
                         last_read = match reader_stream {
                             ChunkReader::Reader(reader, _) => {
