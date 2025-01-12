@@ -29,6 +29,8 @@ struct ProcessStats {
     mem_total: u128,
     mem_max: u64,
     samples_cnt: u64,
+    disk_space: u64,
+    max_disk_space: u64,
 }
 
 #[cfg(feature = "process-stats")]
@@ -40,6 +42,8 @@ impl ProcessStats {
             mem_total: 0,
             mem_max: 0,
             samples_cnt: 0,
+            disk_space: 0,
+            max_disk_space: 0,
         }
     }
 
@@ -49,12 +53,16 @@ impl ProcessStats {
         elapsed_cpu: Duration,
         elapsed_kernel: Duration,
         current_mem: u64,
+        disk_space: u64,
+        _max_disk_space: u64,
     ) {
         self.samples_cnt += 1;
         self.user_cpu_total += elapsed_cpu.as_secs_f64() / elapsed_time.as_secs_f64();
         self.kernel_cpu_total += elapsed_kernel.as_secs_f64() / elapsed_time.as_secs_f64();
         self.mem_total += current_mem as u128;
         self.mem_max = max(self.mem_max, current_mem);
+        self.disk_space = disk_space;
+        self.max_disk_space = max(self.max_disk_space, disk_space);
     }
 
     fn format(&self) -> String {
@@ -65,11 +73,13 @@ impl ProcessStats {
         };
 
         format!(
-            "(uc:{:.2} kc:{:.2} mm:{:.2} cm:{:.2})",
+            "(uc:{:.2} kc:{:.2} mm:{:.2} cm:{:.2} ds: {:.2} mds: {:.2})",
             (self.user_cpu_total / (samples_cnt as f64)),
             (self.kernel_cpu_total / (samples_cnt as f64)),
             MemoryDataSize::from_bytes(self.mem_max as usize),
-            MemoryDataSize::from_bytes((self.mem_total / (samples_cnt as u128)) as usize)
+            MemoryDataSize::from_bytes((self.mem_total / (samples_cnt as u128)) as usize),
+            MemoryDataSize::from_bytes(self.disk_space as usize),
+            MemoryDataSize::from_bytes(self.max_disk_space as usize),
         )
     }
 
@@ -115,18 +125,23 @@ impl PhaseTimesMonitor {
                     let kernel_elapsed_usage = stats.cpu_time_kernel - last_stats.cpu_time_kernel;
                     let user_elapsed_usage = stats.cpu_time_user - last_stats.cpu_time_user;
                     let current_memory = stats.memory_usage_bytes;
+                    let disk_stats = MemoryFs::get_stats();
 
                     GLOBAL_STATS.lock().update(
                         elapsed,
                         user_elapsed_usage,
                         kernel_elapsed_usage,
                         current_memory,
+                        disk_stats.current_disk_usage,
+                        disk_stats.max_disk_usage,
                     );
                     PHASE_STATS.lock().update(
                         elapsed,
                         user_elapsed_usage,
                         kernel_elapsed_usage,
                         current_memory,
+                        disk_stats.current_disk_usage,
+                        disk_stats.max_disk_usage,
                     );
 
                     let mut current_stats = CURRENT_STATS.lock();
@@ -136,6 +151,8 @@ impl PhaseTimesMonitor {
                         user_elapsed_usage,
                         kernel_elapsed_usage,
                         current_memory,
+                        disk_stats.current_disk_usage,
+                        disk_stats.max_disk_usage,
                     );
 
                     last_clock = time_now;

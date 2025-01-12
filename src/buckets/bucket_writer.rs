@@ -12,7 +12,7 @@ pub trait BucketItemSerializer {
     type ExtraDataBuffer;
     type ReadType<'a>;
 
-    type CheckpointData: Serialize + DeserializeOwned;
+    type CheckpointData: Serialize + DeserializeOwned + 'static;
 
     /// Creates a new instance
     fn new() -> Self;

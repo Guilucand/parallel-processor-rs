@@ -1,8 +1,9 @@
 use crate::buckets::writers::{finalize_bucket_file, initialize_bucket_file, THREADS_BUSY_WRITING};
-use crate::buckets::{CheckpointData, CheckpointStrategy, LockFreeBucket};
+use crate::buckets::{CheckpointData, LockFreeBucket};
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::file::flush::GlobalFlush;
 use crate::memory_fs::file::internal::MemoryFileMode;
+use crate::memory_fs::file::reader::FileRangeReference;
 use crate::memory_fs::file::writer::FileWriter;
 use crate::utils::memory_size_to_log2;
 use lz4::{BlockMode, BlockSize, ContentChecksum};
@@ -54,7 +55,6 @@ struct CompressedBinaryWriterInternal {
     level: CompressionLevelInfo,
     data_format_info: Vec<u8>,
 
-    checkpoint_strategy: CheckpointStrategy,
     checkpoint_data: Option<Vec<u8>>,
 }
 
@@ -65,15 +65,29 @@ pub struct CompressedBinaryWriter {
 unsafe impl Send for CompressedBinaryWriter {}
 
 impl CompressedBinaryWriterInternal {
-    fn create_new_block(&mut self) {
+    fn create_new_block(&mut self, passtrough_range: Option<FileRangeReference>) {
         replace_with_or_abort(&mut self.writer, |writer| {
             let (file_buf, res) = writer.finish();
             res.unwrap();
 
-            let checkpoint_pos = file_buf.len();
+            let checkpoint_pos = if let Some(passtrough_range) = passtrough_range {
+                // Add an optional passtrough block
+                self.checkpoints.push(CheckpointData {
+                    offset: file_buf.len() as u64,
+                    data: self.checkpoint_data.clone(),
+                });
+
+                unsafe {
+                    passtrough_range.copy_to_unsync(&file_buf);
+                }
+
+                file_buf.len()
+            } else {
+                file_buf.len()
+            };
+
             self.checkpoints.push(CheckpointData {
                 offset: checkpoint_pos as u64,
-                strategy: self.checkpoint_strategy,
                 data: self.checkpoint_data.clone(),
             });
 
@@ -134,26 +148,26 @@ impl LockFreeBucket for CompressedBinaryWriter {
                 checkpoint_max_size: (1 << checkpoint_max_size.0),
                 checkpoints: vec![CheckpointData {
                     offset: first_checkpoint,
-                    strategy: CheckpointStrategy::Decompress,
                     data: None,
                 }],
                 current_chunk_size: 0,
                 level: *compression_level,
                 data_format_info: data_format_info.to_vec(),
-
-                checkpoint_strategy: CheckpointStrategy::Decompress,
                 checkpoint_data: None,
             }),
             path,
         }
     }
 
-    fn set_checkpoint_data<T: Serialize>(&self, data: &T, strategy: CheckpointStrategy) {
+    fn set_checkpoint_data<T: Serialize>(
+        &self,
+        data: Option<&T>,
+        passtrough_range: Option<FileRangeReference>,
+    ) {
         let mut inner = self.inner.lock();
-        inner.checkpoint_data = Some(bincode::serialize(data).unwrap());
-        inner.checkpoint_strategy = strategy;
+        inner.checkpoint_data = data.map(|data| bincode::serialize(data).unwrap());
         // Always create a new block on checkpoint data change
-        inner.create_new_block();
+        inner.create_new_block(passtrough_range);
     }
 
     fn write_data(&self, bytes: &[u8]) {
@@ -164,7 +178,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
         inner.writer.write_all(bytes).unwrap();
         inner.current_chunk_size += bytes.len() as u64;
         if inner.current_chunk_size > inner.checkpoint_max_size {
-            inner.create_new_block();
+            inner.create_new_block(None);
         }
 
         drop(stat_raii);

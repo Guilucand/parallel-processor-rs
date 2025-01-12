@@ -2,8 +2,9 @@ use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::readers::compressed_binary_reader::CompressedBinaryReader;
 use crate::buckets::readers::generic_binary_reader::{ChunkDecoder, GenericChunkedBinaryReader};
 use crate::buckets::readers::lock_free_binary_reader::LockFreeBinaryReader;
-use crate::buckets::CheckpointStrategy;
+use crate::memory_fs::file::reader::FileRangeReference;
 use crate::memory_fs::RemoveFileMode;
+use crate::scheduler::{PriorityScheduler, ThreadPriorityHandle};
 use crossbeam::channel::*;
 use parking_lot::{Condvar, Mutex, RwLock, RwLockWriteGuard};
 use serde::de::DeserializeOwned;
@@ -56,7 +57,7 @@ impl OpenedFile {
 
 pub enum AsyncReaderBuffer {
     Passtrough {
-        file_range: std::ops::Range<u64>,
+        file_range: FileRangeReference,
         checkpoint_data: Option<Vec<u8>>,
     },
     Decompressed {
@@ -69,10 +70,7 @@ pub enum AsyncReaderBuffer {
 
 impl Default for AsyncReaderBuffer {
     fn default() -> Self {
-        Self::Passtrough {
-            file_range: 0..0,
-            checkpoint_data: None,
-        }
+        Self::Closed
     }
 }
 
@@ -93,10 +91,26 @@ impl AsyncReaderBuffer {
     }
 }
 
+pub enum AllowedCheckpointStrategy<T: ?Sized> {
+    DecompressOnly,
+    AllowPasstrough(Arc<dyn (Fn(Option<&T>) -> bool) + Sync + Send>),
+}
+
+impl Clone for AllowedCheckpointStrategy<[u8]> {
+    fn clone(&self) -> Self {
+        match self {
+            AllowedCheckpointStrategy::DecompressOnly => AllowedCheckpointStrategy::DecompressOnly,
+            AllowedCheckpointStrategy::AllowPasstrough(f) => {
+                AllowedCheckpointStrategy::AllowPasstrough(f.clone())
+            }
+        }
+    }
+}
+
 pub struct AsyncReaderThread {
     buffers: (Sender<AsyncReaderBuffer>, Receiver<AsyncReaderBuffer>),
     buffers_pool: (Sender<Vec<u8>>, Receiver<Vec<u8>>),
-    opened_file: Mutex<(OpenedFile, CheckpointStrategy)>,
+    opened_file: Mutex<(OpenedFile, AllowedCheckpointStrategy<[u8]>)>,
     file_wait_condvar: Condvar,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -115,7 +129,10 @@ impl AsyncReaderThread {
         Arc::new(Self {
             buffers: bounded(buffers_count),
             buffers_pool,
-            opened_file: Mutex::new((OpenedFile::Finished, CheckpointStrategy::Decompress)),
+            opened_file: Mutex::new((
+                OpenedFile::Finished,
+                AllowedCheckpointStrategy::DecompressOnly,
+            )),
             file_wait_condvar: Condvar::new(),
             thread: Mutex::new(None),
         })
@@ -124,6 +141,10 @@ impl AsyncReaderThread {
     fn read_thread(self: Arc<Self>) {
         let mut current_stream_compr = None;
         let mut current_stream_uncompr = None;
+
+        const READ_THREAD_PRIORITY: usize = 3;
+
+        let thread_handle = PriorityScheduler::declare_thread(READ_THREAD_PRIORITY);
 
         while Arc::strong_count(&self) > 1 {
             let mut file_guard = self.opened_file.lock();
@@ -137,8 +158,9 @@ impl AsyncReaderThread {
             fn read_buffer<D: ChunkDecoder>(
                 file: &GenericChunkedBinaryReader<D>,
                 stream: &mut Option<ChunkReader<Vec<u8>, D::ReaderType>>,
-                checkpoint_strategy: CheckpointStrategy,
+                allowed_strategy: AllowedCheckpointStrategy<[u8]>,
                 cached_buffer: &mut Option<Vec<u8>>,
+                thread_handle: &ThreadPriorityHandle,
             ) -> Option<AsyncReaderBuffer> {
                 let mut total_read_bytes = 0;
                 let mut checkpoint_data = None;
@@ -148,7 +170,7 @@ impl AsyncReaderThread {
                     if stream.is_none() {
                         is_continuation = false;
 
-                        *stream = file.get_read_parallel_stream(checkpoint_strategy);
+                        *stream = file.get_read_parallel_stream(allowed_strategy.clone());
 
                         match &stream {
                             Some(stream_) => match stream_ {
@@ -178,7 +200,9 @@ impl AsyncReaderThread {
                     while total_read_bytes < out_buffer.len() && last_read > 0 {
                         last_read = match reader_stream {
                             ChunkReader::Reader(reader, _) => {
-                                reader.read(&mut out_buffer[total_read_bytes..]).unwrap()
+                                PriorityScheduler::execute_blocking_call(thread_handle, || {
+                                    reader.read(&mut out_buffer[total_read_bytes..]).unwrap()
+                                })
                             }
                             _ => unreachable!(),
                         };
@@ -204,7 +228,7 @@ impl AsyncReaderThread {
                 })
             }
 
-            let checkpoint_strategy = file_guard.1;
+            let allowed_strategy = file_guard.1.clone();
 
             let data = match &mut file_guard.0 {
                 OpenedFile::NotOpened | OpenedFile::Finished => {
@@ -216,14 +240,16 @@ impl AsyncReaderThread {
                 OpenedFile::Plain(file) => read_buffer(
                     &file,
                     &mut current_stream_uncompr,
-                    checkpoint_strategy,
+                    allowed_strategy,
                     &mut cached_buffer,
+                    &thread_handle,
                 ),
                 OpenedFile::Compressed(file) => read_buffer(
                     file,
                     &mut current_stream_compr,
-                    checkpoint_strategy,
+                    allowed_strategy,
                     &mut cached_buffer,
+                    &thread_handle,
                 ),
             };
 
@@ -236,6 +262,8 @@ impl AsyncReaderThread {
                     current_stream_compr = None;
                     current_stream_uncompr = None;
                     file_guard.0 = OpenedFile::Finished;
+                    // Clear the current closure
+                    file_guard.1 = AllowedCheckpointStrategy::DecompressOnly;
                     let _ = self.buffers.0.send(AsyncReaderBuffer::Closed);
                 }
             }
@@ -247,11 +275,12 @@ impl AsyncReaderThread {
         }
     }
 
-    fn read_bucket(
+    fn read_bucket<'a, T: DeserializeOwned + 'static>(
         self: Arc<Self>,
         new_opened_file: OpenedFile,
-        checkpoint_strategy: CheckpointStrategy,
-    ) -> AsyncStreamThreadReader {
+        allowed_strategy: AllowedCheckpointStrategy<T>,
+        thread_handle: &'a ThreadPriorityHandle,
+    ) -> AsyncStreamThreadReader<'a> {
         let mut opened_file = self.opened_file.lock();
 
         // Ensure that the previous file is finished
@@ -260,7 +289,25 @@ impl AsyncReaderThread {
             _ => panic!("File not finished!"),
         }
 
-        *opened_file = (new_opened_file, checkpoint_strategy);
+        *opened_file = (
+            new_opened_file,
+            match allowed_strategy {
+                AllowedCheckpointStrategy::DecompressOnly => {
+                    AllowedCheckpointStrategy::DecompressOnly
+                }
+                AllowedCheckpointStrategy::AllowPasstrough(f) => {
+                    AllowedCheckpointStrategy::AllowPasstrough(Arc::new(
+                        move |data: Option<&[u8]>| {
+                            let data = data.map(|data| {
+                                bincode::deserialize(data)
+                                    .expect("Failed to deserialize checkpoint data")
+                            });
+                            f(data.as_ref())
+                        },
+                    ))
+                }
+            },
+        );
 
         self.file_wait_condvar.notify_all();
         drop(opened_file);
@@ -291,28 +338,30 @@ impl AsyncReaderThread {
             current_pos: 0,
             checkpoint_finished: true,
             stream_finished: false,
+            thread_handle,
         }
     }
 }
 
-struct AsyncStreamThreadReader {
+struct AsyncStreamThreadReader<'a> {
     receiver: Receiver<AsyncReaderBuffer>,
     owner: Arc<AsyncReaderThread>,
     current: AsyncReaderBuffer,
     current_pos: usize,
     checkpoint_finished: bool,
     stream_finished: bool,
+    thread_handle: &'a ThreadPriorityHandle,
 }
 
 enum AsyncCheckpointInfo<T> {
     Stream(Option<T>),
     Passtrough {
-        file_range: std::ops::Range<u64>,
+        file_range: FileRangeReference,
         checkpoint_data: Option<T>,
     },
 }
 
-impl AsyncStreamThreadReader {
+impl<'a> AsyncStreamThreadReader<'a> {
     fn get_checkpoint_info_and_reset_reader<T: DeserializeOwned>(
         &mut self,
     ) -> Option<AsyncCheckpointInfo<T>> {
@@ -339,7 +388,9 @@ impl AsyncStreamThreadReader {
                 };
 
                 // This buffer is now used, change it
-                self.current = self.receiver.recv().unwrap();
+                PriorityScheduler::execute_blocking_call(&mut self.thread_handle, || {
+                    self.current = self.receiver.recv().unwrap();
+                });
 
                 Some(info)
             }
@@ -357,7 +408,7 @@ impl AsyncStreamThreadReader {
     }
 }
 
-impl Read for AsyncStreamThreadReader {
+impl<'a> Read for AsyncStreamThreadReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut bytes_read = 0;
         loop {
@@ -373,11 +424,21 @@ impl Read for AsyncStreamThreadReader {
                 AsyncReaderBuffer::Passtrough { .. } => unreachable!(),
                 AsyncReaderBuffer::Decompressed { data, .. } => {
                     if self.current_pos == data.len() {
-                        if let Some(buffer) =
-                            std::mem::replace(&mut self.current, self.receiver.recv().unwrap())
-                                .into_buffer()
+                        if let Some(buffer) = std::mem::replace(
+                            &mut self.current,
+                            PriorityScheduler::execute_blocking_call(
+                                &mut self.thread_handle,
+                                || self.receiver.recv().unwrap(),
+                            ),
+                        )
+                        .into_buffer()
                         {
-                            let _ = self.owner.buffers_pool.0.send(buffer);
+                            PriorityScheduler::execute_blocking_call(
+                                &mut self.thread_handle,
+                                || {
+                                    let _ = self.owner.buffers_pool.0.send(buffer);
+                                },
+                            );
                         }
                         self.current_pos = 0;
                         self.checkpoint_finished = !self.current.is_continuation();
@@ -400,7 +461,7 @@ impl Read for AsyncStreamThreadReader {
     }
 }
 
-impl Drop for AsyncStreamThreadReader {
+impl<'a> Drop for AsyncStreamThreadReader<'a> {
     fn drop(&mut self) {
         assert!(matches!(self.current, AsyncReaderBuffer::Closed));
     }
@@ -490,12 +551,14 @@ impl AsyncBinaryReader {
         self.opened_file.read().is_finished()
     }
 
-    pub fn get_items_stream<S: BucketItemSerializer, const ALLOW_PASSTROUGH: bool>(
+    pub fn get_items_stream<'a, S: BucketItemSerializer>(
         &self,
         read_thread: Arc<AsyncReaderThread>,
         buffer: S::ReadBuffer,
         extra_buffer: S::ExtraDataBuffer,
-    ) -> AsyncBinaryReaderItemsIterator<S, ALLOW_PASSTROUGH> {
+        allowed_strategy: AllowedCheckpointStrategy<S::CheckpointData>,
+        thread_handle: &'a ThreadPriorityHandle,
+    ) -> AsyncBinaryReaderItemsIterator<'a, S> {
         let mut opened_file = self.opened_file.read();
         if matches!(*opened_file, OpenedFile::NotOpened) {
             drop(opened_file);
@@ -507,15 +570,8 @@ impl AsyncBinaryReader {
             opened_file = RwLockWriteGuard::downgrade(writable);
         }
 
-        let stream = read_thread.read_bucket(
-            opened_file.clone(),
-            if ALLOW_PASSTROUGH {
-                CheckpointStrategy::Passtrough
-            } else {
-                CheckpointStrategy::Decompress
-            },
-        );
-        AsyncBinaryReaderItemsIterator::<_, ALLOW_PASSTROUGH> {
+        let stream = read_thread.read_bucket(opened_file.clone(), allowed_strategy, thread_handle);
+        AsyncBinaryReaderItemsIterator::<_> {
             buffer,
             extra_buffer,
             stream,
@@ -528,26 +584,26 @@ impl AsyncBinaryReader {
     }
 }
 
-pub struct AsyncBinaryReaderItemsIterator<S: BucketItemSerializer, const ALLOW_PASSTROUGH: bool> {
+pub struct AsyncBinaryReaderItemsIterator<'a, S: BucketItemSerializer> {
     buffer: S::ReadBuffer,
     extra_buffer: S::ExtraDataBuffer,
-    stream: AsyncStreamThreadReader,
+    stream: AsyncStreamThreadReader<'a>,
     deserializer: S,
 }
 
 pub enum AsyncBinaryReaderIteratorData<'a, S: BucketItemSerializer> {
     Stream(
-        &'a mut AsyncBinaryReaderItemsIteratorCheckpoint<S, true>,
+        &'a mut AsyncBinaryReaderItemsIteratorCheckpoint<'a, S>,
         Option<S::CheckpointData>,
     ),
     Passtrough {
-        file_range: std::ops::Range<u64>,
+        file_range: FileRangeReference,
         checkpoint_data: Option<S::CheckpointData>,
     },
 }
 
-impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S, true> {
-    pub fn get_next_checkpoint(&mut self) -> Option<AsyncBinaryReaderIteratorData<S>> {
+impl<'a, S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<'a, S> {
+    pub fn get_next_checkpoint_extended(&mut self) -> Option<AsyncBinaryReaderIteratorData<S>> {
         let info = self.stream.get_checkpoint_info_and_reset_reader()?;
         Some(match info {
             AsyncCheckpointInfo::Stream(data) => {
@@ -564,11 +620,11 @@ impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S, true> {
     }
 }
 
-impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S, false> {
+impl<'a, S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<'a, S> {
     pub fn get_next_checkpoint(
         &mut self,
     ) -> Option<(
-        &mut AsyncBinaryReaderItemsIteratorCheckpoint<S, false>,
+        &mut AsyncBinaryReaderItemsIteratorCheckpoint<S>,
         Option<S::CheckpointData>,
     )> {
         let info = self.stream.get_checkpoint_info_and_reset_reader()?;
@@ -580,14 +636,11 @@ impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S, false> {
 }
 
 #[repr(transparent)]
-pub struct AsyncBinaryReaderItemsIteratorCheckpoint<
-    S: BucketItemSerializer,
-    const ALLOW_PASSTROUGH: bool,
->(AsyncBinaryReaderItemsIterator<S, ALLOW_PASSTROUGH>);
+pub struct AsyncBinaryReaderItemsIteratorCheckpoint<'a, S: BucketItemSerializer>(
+    AsyncBinaryReaderItemsIterator<'a, S>,
+);
 
-impl<S: BucketItemSerializer, const ALLOW_PASSTROUGH: bool>
-    AsyncBinaryReaderItemsIteratorCheckpoint<S, ALLOW_PASSTROUGH>
-{
+impl<'a, S: BucketItemSerializer> AsyncBinaryReaderItemsIteratorCheckpoint<'a, S> {
     pub fn next(&mut self) -> Option<(S::ReadType<'_>, &mut S::ExtraDataBuffer)> {
         let item = self.0.deserializer.read_from(
             &mut self.0.stream,

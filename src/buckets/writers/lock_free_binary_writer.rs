@@ -1,9 +1,10 @@
 use crate::buckets::writers::{
     finalize_bucket_file, initialize_bucket_file, BucketHeader, THREADS_BUSY_WRITING,
 };
-use crate::buckets::{CheckpointData, CheckpointStrategy, LockFreeBucket};
+use crate::buckets::{CheckpointData, LockFreeBucket};
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::file::internal::MemoryFileMode;
+use crate::memory_fs::file::reader::FileRangeReference;
 use crate::memory_fs::file::writer::FileWriter;
 use crate::utils::memory_size_to_log2;
 use mt_debug_counters::counter::AtomicCounterGuardSum;
@@ -29,7 +30,6 @@ pub struct LockFreeBinaryWriter {
     writer: FileWriter,
     checkpoint_max_size_log2: u8,
     checkpoints: Mutex<Vec<CheckpointData>>,
-    checkpoint_strategy: Mutex<CheckpointStrategy>,
     checkpoint_data: Mutex<Option<Vec<u8>>>,
 
     file_size: AtomicU64,
@@ -71,27 +71,39 @@ impl LockFreeBucket for LockFreeBinaryWriter {
             checkpoint_max_size_log2: checkpoint_max_size.0,
             checkpoints: Mutex::new(vec![CheckpointData {
                 offset: first_checkpoint,
-                strategy: CheckpointStrategy::Decompress,
                 data: None,
             }]),
             file_size: AtomicU64::new(0),
             data_format_info: data_format_info.to_vec(),
-
-            checkpoint_strategy: Mutex::new(CheckpointStrategy::Decompress),
             checkpoint_data: Mutex::new(None),
         }
     }
 
-    fn set_checkpoint_data<T: Serialize>(&self, data: &T, strategy: CheckpointStrategy) {
-        let data = bincode::serialize(data).unwrap();
-        *self.checkpoint_data.lock() = Some(data.clone());
-        *self.checkpoint_strategy.lock() = strategy;
+    fn set_checkpoint_data<T: Serialize>(
+        &self,
+        data: Option<&T>,
+        passtrough_range: Option<FileRangeReference>,
+    ) {
+        let data = data.map(|data| bincode::serialize(data).unwrap());
+        *self.checkpoint_data.lock() = data.clone();
         // Always create a new block on checkpoint data change
+
+        if let Some(passtrough_range) = passtrough_range {
+            let position = self.writer.write_all_parallel(&[], 1);
+            self.checkpoints.lock().push(CheckpointData {
+                offset: position as u64,
+                data: data.clone(),
+            });
+            unsafe {
+                // TODO: Be sure that the file has exclusive access
+                passtrough_range.copy_to_unsync(&self.writer);
+            }
+        }
+
         let position = self.writer.write_all_parallel(&[], 1);
         self.checkpoints.lock().push(CheckpointData {
             offset: position as u64,
-            strategy,
-            data: Some(data),
+            data,
         });
     }
 
@@ -109,7 +121,6 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         {
             self.checkpoints.lock().push(CheckpointData {
                 offset: position as u64,
-                strategy: *self.checkpoint_strategy.lock(),
                 data: self.checkpoint_data.lock().clone(),
             });
         }

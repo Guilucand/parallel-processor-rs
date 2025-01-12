@@ -6,6 +6,7 @@ use crate::execution_manager::executor_address::{ExecutorAddress, WeakExecutorAd
 use crate::execution_manager::memory_tracker::MemoryTracker;
 use crate::execution_manager::objects_pool::PoolObject;
 use crate::execution_manager::packet::{Packet, PacketTrait, PacketsPool};
+use crate::scheduler::{PriorityScheduler, ThreadPriorityHandle};
 use std::any::Any;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -63,21 +64,25 @@ impl<E: AsyncExecutor> ExecutorReceiver<E> {
     pub async fn obtain_address_with_priority(
         &mut self,
         priority: usize,
+        thread_handle: &ThreadPriorityHandle,
     ) -> Result<(ExecutorAddressOperations<E>, Arc<E::InitData>), ()> {
-        let (addr, counter, channel, init_data) =
-            self.addresses_channel.recv_offset(priority).await?;
+        PriorityScheduler::execute_blocking_call_async(thread_handle, async {
+            let (addr, counter, channel, init_data) =
+                self.addresses_channel.recv_offset(priority).await?;
 
-        Ok((
-            ExecutorAddressOperations {
-                addr,
-                counter,
-                channel,
-                context: self.context.clone(),
-                is_finished: AtomicBool::new(false),
-                _phantom: PhantomData,
-            },
-            init_data.downcast().unwrap(),
-        ))
+            Ok((
+                ExecutorAddressOperations {
+                    addr,
+                    counter,
+                    channel,
+                    context: self.context.clone(),
+                    is_finished: AtomicBool::new(false),
+                    _phantom: PhantomData,
+                },
+                init_data.downcast().unwrap(),
+            ))
+        })
+        .await
     }
 }
 
@@ -90,18 +95,24 @@ pub struct ExecutorAddressOperations<'a, E: AsyncExecutor> {
     _phantom: PhantomData<&'a E>,
 }
 impl<'a, E: AsyncExecutor> ExecutorAddressOperations<'a, E> {
-    pub async fn receive_packet(&self) -> Option<Packet<E::InputPacket>> {
+    pub async fn receive_packet(
+        &self,
+        handle: &ThreadPriorityHandle,
+    ) -> Option<Packet<E::InputPacket>> {
         if self.is_finished.load(Ordering::SeqCst) {
             return None;
         }
 
-        match self.channel.recv().await {
-            Ok(packet) => Some(packet.downcast()),
-            Err(()) => {
-                self.is_finished.store(true, Ordering::SeqCst);
-                None
+        PriorityScheduler::execute_blocking_call_async(handle, async {
+            match self.channel.recv().await {
+                Ok(packet) => Some(packet.downcast()),
+                Err(()) => {
+                    self.is_finished.store(true, Ordering::SeqCst);
+                    None
+                }
             }
-        }
+        })
+        .await
     }
     pub fn declare_addresses(&self, addresses: Vec<ExecutorAddress>, priority: usize) {
         self.context.register_executors_batch(addresses, priority);
@@ -109,13 +120,24 @@ impl<'a, E: AsyncExecutor> ExecutorAddressOperations<'a, E> {
     pub async fn pool_alloc_await(
         &self,
         new_size: usize,
+        handle: &ThreadPriorityHandle,
     ) -> Arc<PoolObject<PacketsPool<E::OutputPacket>>> {
-        let pool = self.context.allocate_pool::<E>(false).await.unwrap();
+        let pool = PriorityScheduler::execute_blocking_call_async(handle, async {
+            self.context.allocate_pool::<E>(false).await.unwrap()
+        })
+        .await;
         pool.set_size(new_size);
         pool
     }
-    pub fn packet_send(&self, address: ExecutorAddress, packet: Packet<E::OutputPacket>) {
-        self.context.send_packet(address, packet);
+    pub fn packet_send(
+        &self,
+        address: ExecutorAddress,
+        packet: Packet<E::OutputPacket>,
+        handle: &ThreadPriorityHandle,
+    ) {
+        PriorityScheduler::execute_blocking_call(handle, || {
+            self.context.send_packet(address, packet);
+        })
     }
 
     pub fn get_context(&self) -> &ExecutionContext {

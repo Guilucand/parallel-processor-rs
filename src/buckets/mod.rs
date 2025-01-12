@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::memory_fs::file::reader::FileRangeReference;
+
 pub mod bucket_writer;
 pub mod concurrent;
 pub mod readers;
@@ -24,7 +26,6 @@ pub enum CheckpointStrategy {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckpointData {
     offset: u64,
-    strategy: CheckpointStrategy,
     data: Option<Vec<u8>>,
 }
 
@@ -64,7 +65,11 @@ pub trait LockFreeBucket: Sized {
         )
     }
 
-    fn set_checkpoint_data<T: Serialize>(&self, data: &T, strategy: CheckpointStrategy);
+    fn set_checkpoint_data<T: Serialize>(
+        &self,
+        data: Option<&T>,
+        passtrough_range: Option<FileRangeReference>,
+    );
 
     fn write_data(&self, bytes: &[u8]);
     fn get_path(&self) -> PathBuf;

@@ -4,8 +4,47 @@ use parking_lot::{RawRwLock, RwLock};
 use std::cmp::min;
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::slice::from_raw_parts;
 use std::sync::Arc;
+
+use super::writer::FileWriter;
+
+#[derive(Clone)]
+pub struct FileRangeReference {
+    file: Arc<RwLock<MemoryFileInternal>>,
+    start_chunk: usize,
+    start_chunk_offset: usize,
+    bytes_count: usize,
+}
+
+impl FileRangeReference {
+    pub unsafe fn copy_to_unsync(&self, other: &FileWriter) {
+        let file = self.file.read();
+        let mut chunk_index = self.start_chunk;
+        let mut chunk_offset = self.start_chunk_offset;
+        let mut written_bytes = 0;
+
+        while written_bytes < self.bytes_count {
+            let chunk = file.get_chunk(chunk_index);
+            let chunk = chunk.read();
+            let to_copy = (chunk.get_length() - chunk_offset).min(self.bytes_count - written_bytes);
+
+            let data = chunk
+                .get_ptr(&file.get_underlying_file(), None)
+                .add(chunk_offset);
+
+            other.write_all_parallel(from_raw_parts(data, to_copy), to_copy);
+
+            written_bytes += to_copy;
+            chunk_index += 1;
+            chunk_offset = 0;
+        }
+
+        // other.write_all_parallel(data, el_size)
+    }
+}
 
 pub struct FileReader {
     path: PathBuf,
@@ -89,6 +128,32 @@ impl FileReader {
 
     pub fn close_and_remove(self, remove_fs: bool) -> bool {
         MemoryFileInternal::delete(self.path, remove_fs)
+    }
+
+    pub fn get_range_reference(&self, file_range: Range<u64>) -> FileRangeReference {
+        let file = self.file.read();
+        let mut chunk_index = 0;
+        let mut chunk_offset = 0;
+        let mut start = file_range.start;
+
+        while start > 0 {
+            let chunk = file.get_chunk(chunk_index);
+            let chunk = chunk.read();
+            let len = chunk.get_length() as u64;
+            if start < len {
+                chunk_offset = start as usize;
+                break;
+            }
+            start -= len;
+            chunk_index += 1;
+        }
+
+        FileRangeReference {
+            file: self.file.clone(),
+            start_chunk: chunk_index,
+            start_chunk_offset: chunk_offset,
+            bytes_count: file_range.end as usize - file_range.start as usize,
+        }
     }
 
     // pub fn get_typed_chunks_mut<T>(&mut self) -> Option<impl Iterator<Item = &mut [T]>> {

@@ -1,18 +1,18 @@
 use crate::buckets::bucket_writer::BucketItemSerializer;
 use crate::buckets::readers::BucketReader;
 use crate::buckets::writers::{BucketCheckpoints, BucketHeader};
-use crate::buckets::CheckpointStrategy;
-use crate::memory_fs::file::reader::FileReader;
+use crate::memory_fs::file::reader::{FileRangeReference, FileReader};
 use crate::memory_fs::{MemoryFs, RemoveFileMode};
 use desse::Desse;
 use desse::DesseSized;
 use replace_with::replace_with_or_abort;
 use serde::de::DeserializeOwned;
 use std::io::{Read, Seek, SeekFrom};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+
+use super::async_binary_reader::AllowedCheckpointStrategy;
 
 pub trait ChunkDecoder {
     const MAGIC_HEADER: &'static [u8; 16];
@@ -33,7 +33,7 @@ pub struct GenericChunkedBinaryReader<D: ChunkDecoder> {
 pub enum ChunkReader<T, R> {
     Reader(R, Option<T>),
     Passtrough {
-        file_range: Range<u64>,
+        file_range: FileRangeReference,
         data: Option<T>,
     },
 }
@@ -41,7 +41,7 @@ pub enum ChunkReader<T, R> {
 pub enum DecodeItemsStatus<T> {
     Decompressed,
     Passtrough {
-        file_range: Range<u64>,
+        file_range: FileRangeReference,
         data: Option<T>,
     },
 }
@@ -178,7 +178,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
 
     pub fn get_read_parallel_stream_with_chunk_type<T: DeserializeOwned>(
         &self,
-        allowed_strategy: CheckpointStrategy,
+        allowed_strategy: AllowedCheckpointStrategy<[u8]>,
     ) -> Option<ChunkReader<T, D::ReaderType>> {
         match self.get_read_parallel_stream(allowed_strategy) {
             None => None,
@@ -195,7 +195,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
 
     pub fn get_read_parallel_stream(
         &self,
-        allowed_strategy: CheckpointStrategy,
+        allowed_strategy: AllowedCheckpointStrategy<[u8]>,
     ) -> Option<ChunkReader<Vec<u8>, D::ReaderType>> {
         let index = self.parallel_index.fetch_add(1, Ordering::Relaxed) as usize;
 
@@ -204,8 +204,6 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         }
 
         let addr_start = self.sequential_reader.index.index[index].offset as usize;
-
-        let current_strategy = self.sequential_reader.index.index[index].strategy;
         let checkpoint_data = self.sequential_reader.index.index[index].data.clone();
 
         let mut reader = self.parallel_reader.clone();
@@ -217,16 +215,24 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
             index,
         );
 
-        match (allowed_strategy, current_strategy) {
-            (CheckpointStrategy::Decompress, _) | (_, CheckpointStrategy::Decompress) => Some(
-                ChunkReader::Reader(D::decode_stream(reader, size), checkpoint_data),
-            ),
-            (CheckpointStrategy::Passtrough, CheckpointStrategy::Passtrough) => {
-                reader.seek(SeekFrom::Start(addr_start as u64)).unwrap();
-                Some(ChunkReader::Passtrough {
-                    file_range: (addr_start as u64)..(addr_start as u64 + size),
-                    data: checkpoint_data,
-                })
+        match allowed_strategy {
+            AllowedCheckpointStrategy::DecompressOnly => Some(ChunkReader::Reader(
+                D::decode_stream(reader, size),
+                checkpoint_data,
+            )),
+            AllowedCheckpointStrategy::AllowPasstrough(checker) => {
+                if checker(checkpoint_data.as_deref()) {
+                    let file_range = (addr_start as u64)..(addr_start as u64 + size);
+                    Some(ChunkReader::Passtrough {
+                        file_range: reader.get_range_reference(file_range),
+                        data: checkpoint_data,
+                    })
+                } else {
+                    Some(ChunkReader::Reader(
+                        D::decode_stream(reader, size),
+                        checkpoint_data,
+                    ))
+                }
             }
         }
     }
@@ -238,11 +244,11 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         &self,
         mut buffer: S::ReadBuffer,
         mut extra_buffer: S::ExtraDataBuffer,
-        checkpoint_strategy: CheckpointStrategy,
+        allowed_strategy: AllowedCheckpointStrategy<[u8]>,
         mut func: F,
     ) -> Option<DecodeItemsStatus<S::CheckpointData>> {
         let stream = match self
-            .get_read_parallel_stream_with_chunk_type::<S::CheckpointData>(checkpoint_strategy)
+            .get_read_parallel_stream_with_chunk_type::<S::CheckpointData>(allowed_strategy)
         {
             None => return None,
             Some(stream) => stream,
