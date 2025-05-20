@@ -121,9 +121,10 @@ impl<'a, E: AsyncExecutor> ExecutorAddressOperations<'a, E> {
         &self,
         new_size: usize,
         handle: &ThreadPriorityHandle,
+        force: bool,
     ) -> Arc<PoolObject<PacketsPool<E::OutputPacket>>> {
         let pool = PriorityScheduler::execute_blocking_call_async(handle, async {
-            self.context.allocate_pool::<E>(false).await.unwrap()
+            self.context.allocate_pool::<E>(force).await.unwrap()
         })
         .await;
         pool.set_size(new_size);

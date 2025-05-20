@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use rustc_hash::FxHashMap;
 use std::fs::File;
 
 use std::path::{Path, PathBuf};
@@ -22,8 +22,8 @@ pub mod file;
 pub mod flushable_buffer;
 pub(crate) mod stats;
 
-static mut FILES_FLUSH_HASH_MAP: Option<Mutex<HashMap<PathBuf, Vec<Arc<(PathBuf, Mutex<File>)>>>>> =
-    None;
+static FILES_FLUSH_HASH_MAP: Mutex<Option<FxHashMap<PathBuf, Vec<Arc<(PathBuf, Mutex<File>)>>>>> =
+    Mutex::new(None);
 
 pub struct MemoryFs;
 
@@ -40,19 +40,20 @@ impl MemoryFs {
         threads_count: usize,
         min_chunks_count: usize,
     ) {
-        unsafe {
-            let chunk_size = (memory_size / (min_chunks_count as f64)).as_bytes();
+        let chunk_size = (memory_size / (min_chunks_count as f64)).as_bytes();
 
-            let mut suggested_chunk_size_log = 1;
+        let mut suggested_chunk_size_log = 1;
 
-            while (1 << (suggested_chunk_size_log + 1)) <= chunk_size {
-                suggested_chunk_size_log += 1;
-            }
-
-            CHUNKS_ALLOCATOR.initialize(memory_size, suggested_chunk_size_log, min_chunks_count);
-            FILES_FLUSH_HASH_MAP = Some(Mutex::new(HashMap::with_capacity(8192)));
-            GlobalFlush::init(flush_queue_size, threads_count);
+        while (1 << (suggested_chunk_size_log + 1)) <= chunk_size {
+            suggested_chunk_size_log += 1;
         }
+
+        CHUNKS_ALLOCATOR.initialize(memory_size, suggested_chunk_size_log, min_chunks_count);
+        *FILES_FLUSH_HASH_MAP.lock() = Some(FxHashMap::with_capacity_and_hasher(
+            8192,
+            Default::default(),
+        ));
+        GlobalFlush::init(flush_queue_size, threads_count);
     }
 
     pub fn remove_file(file: impl AsRef<Path>, remove_mode: RemoveFileMode) -> Result<(), ()> {
@@ -78,13 +79,11 @@ impl MemoryFs {
     }
 
     pub fn ensure_flushed(file: impl AsRef<Path>) {
-        unsafe {
-            FILES_FLUSH_HASH_MAP
-                .as_mut()
-                .unwrap()
-                .lock()
-                .remove(&file.as_ref().to_path_buf());
-        }
+        FILES_FLUSH_HASH_MAP
+            .lock()
+            .as_mut()
+            .unwrap()
+            .remove(&file.as_ref().to_path_buf());
     }
 
     pub fn remove_directory(dir: impl AsRef<Path>, remove_fs: bool) -> bool {
@@ -117,7 +116,8 @@ impl MemoryFs {
         let (current, max_size) = GlobalFlush::global_queue_occupation();
         if current * 3 < max_size {
             let mut map_lock = SWAPPABLE_FILES.lock();
-            let map_lock_mut = NightlyUtils::mutex_get_or_init(&mut map_lock, || BTreeMap::new());
+            let map_lock_mut =
+                NightlyUtils::mutex_get_or_init(&mut map_lock, || FxHashMap::default());
 
             let mut file_ref = None;
 

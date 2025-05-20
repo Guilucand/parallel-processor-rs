@@ -39,6 +39,7 @@ static GLOBAL_QUEUE_MAX_SIZE_NOW: AtomicCounter<MaxMode> =
 
 pub struct GlobalFlush;
 
+#[allow(static_mut_refs)]
 impl GlobalFlush {
     pub fn global_queue_occupation() -> (usize, usize) {
         unsafe {
@@ -58,7 +59,7 @@ impl GlobalFlush {
     }
 
     pub fn add_item_to_flush_queue(item: FlushableItem) {
-        unsafe { GLOBAL_FLUSH_QUEUE.as_mut().unwrap().send(item).unwrap() }
+        unsafe { GLOBAL_FLUSH_QUEUE.as_ref().unwrap().send(item).unwrap() }
     }
 
     fn flush_thread(flush_channel_receiver: Receiver<FlushableItem>) {
@@ -149,7 +150,7 @@ impl GlobalFlush {
     }
 
     pub fn flush_to_disk() {
-        while !unsafe { GLOBAL_FLUSH_QUEUE.as_mut().unwrap().is_empty() } {
+        while !unsafe { GLOBAL_FLUSH_QUEUE.as_ref().unwrap().is_empty() } {
             std::thread::sleep(Duration::from_millis(50));
         }
         // Ensure that no writers are still writing!

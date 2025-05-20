@@ -9,8 +9,8 @@ use once_cell::sync::Lazy;
 use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard, RawMutex};
 use parking_lot::{Mutex, RawRwLock, RwLock};
 use replace_with::replace_with_or_abort;
+use rustc_hash::FxHashMap;
 use std::cmp::min;
-use std::collections::BTreeMap;
 use std::fs::remove_file;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ static MEMORY_MAPPED_FILES: Lazy<DashMap<PathBuf, Arc<RwLock<MemoryFileInternal>
     Lazy::new(|| DashMap::new());
 
 pub static SWAPPABLE_FILES: Mutex<
-    Option<BTreeMap<(usize, PathBuf), Weak<RwLock<MemoryFileInternal>>>>,
+    Option<FxHashMap<(usize, PathBuf), Weak<RwLock<MemoryFileInternal>>>>,
 > = Mutex::const_new(parking_lot::RawMutex::INIT, None);
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -217,7 +217,7 @@ impl MemoryFileInternal {
                     MemoryFileMode::AlwaysMemory => {}
                     MemoryFileMode::PreferMemory { swap_priority } => {
                         NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || {
-                            BTreeMap::new()
+                            FxHashMap::default()
                         })
                         .remove(&(swap_priority, path.as_ref().to_path_buf()));
                     }
@@ -342,11 +342,13 @@ impl MemoryFileInternal {
     fn put_on_swappable_list(self_: &ArcRwLockWriteGuard<RawRwLock, Self>) {
         if let MemoryFileMode::PreferMemory { swap_priority } = self_.memory_mode {
             if !self_.on_swap_list.swap(true, Ordering::Relaxed) {
-                NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || BTreeMap::new())
-                    .insert(
-                        (swap_priority, self_.path.clone()),
-                        Arc::downgrade(ArcRwLockWriteGuard::rwlock(self_)),
-                    );
+                NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || {
+                    FxHashMap::default()
+                })
+                .insert(
+                    (swap_priority, self_.path.clone()),
+                    Arc::downgrade(ArcRwLockWriteGuard::rwlock(self_)),
+                );
             }
         }
     }

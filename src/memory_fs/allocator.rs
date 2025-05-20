@@ -488,9 +488,7 @@ impl ChunksAllocator {
             chunks = self.chunks.lock();
         }
 
-        unsafe {
-            FILES_FLUSH_HASH_MAP.take();
-        }
+        FILES_FLUSH_HASH_MAP.lock().take();
 
         {
             chunks.clear();
