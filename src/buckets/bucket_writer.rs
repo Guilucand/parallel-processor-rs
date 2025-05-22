@@ -11,11 +11,12 @@ pub trait BucketItemSerializer {
     type ReadBuffer;
     type ExtraDataBuffer;
     type ReadType<'a>;
+    type InitData;
 
     type CheckpointData: Serialize + DeserializeOwned + 'static;
 
     /// Creates a new instance
-    fn new() -> Self;
+    fn new(init_data: Self::InitData) -> Self;
     /// Reset on non continuous data
     fn reset(&mut self);
 
@@ -43,11 +44,12 @@ impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
     type ExtraDataBuffer = ();
     type ReadBuffer = [u8; SIZE];
     type ReadType<'a> = &'a [u8; SIZE];
+    type InitData = ();
 
     type CheckpointData = ();
 
     #[inline(always)]
-    fn new() -> Self {
+    fn new(_: ()) -> Self {
         Self(PhantomData)
     }
 
@@ -88,11 +90,12 @@ impl BucketItemSerializer for BytesSliceSerializer {
     type ExtraDataBuffer = ();
     type ReadBuffer = ();
     type ReadType<'a> = ();
+    type InitData = ();
 
     type CheckpointData = ();
 
     #[inline(always)]
-    fn new() -> Self {
+    fn new(_: ()) -> Self {
         Self
     }
 

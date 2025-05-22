@@ -246,6 +246,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         mut extra_buffer: S::ExtraDataBuffer,
         allowed_strategy: AllowedCheckpointStrategy<[u8]>,
         mut func: F,
+        deserializer_init_data: S::InitData,
     ) -> Option<DecodeItemsStatus<S::CheckpointData>> {
         let stream = match self
             .get_read_parallel_stream_with_chunk_type::<S::CheckpointData>(allowed_strategy)
@@ -254,7 +255,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
             Some(stream) => stream,
         };
 
-        let mut deserializer = S::new();
+        let mut deserializer = S::new(deserializer_init_data);
 
         match stream {
             ChunkReader::Reader(mut stream, data) => {
@@ -281,10 +282,11 @@ impl<D: ChunkDecoder> BucketReader for GenericChunkedBinaryReader<D> {
         mut buffer: S::ReadBuffer,
         extra_buffer: &mut S::ExtraDataBuffer,
         mut func: F,
+        deserializer_init_data: S::InitData,
     ) {
         let mut stream = self.get_single_stream();
 
-        let mut deserializer = S::new();
+        let mut deserializer = S::new(deserializer_init_data);
         while let Some(el) = deserializer.read_from(&mut stream, &mut buffer, extra_buffer) {
             func(el, extra_buffer);
         }

@@ -16,6 +16,7 @@ pub trait BucketReader {
         buffer: S::ReadBuffer,
         extra_buffer: &mut S::ExtraDataBuffer,
         func: F,
+        deserializer_init_data: S::InitData,
     );
 
     fn get_name(&self) -> PathBuf;

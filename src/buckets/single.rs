@@ -15,6 +15,7 @@ impl<'a, B: LockFreeBucket, S: BucketItemSerializer> SingleBucketThreadDispatche
         buffer_size: MemoryDataSize,
         bucket_index: u16,
         buckets: &'a MultiThreadBuckets<B>,
+        serializer_init_data: S::InitData,
     ) -> Self {
         let buffer = Vec::with_capacity(buffer_size.as_bytes());
 
@@ -22,7 +23,7 @@ impl<'a, B: LockFreeBucket, S: BucketItemSerializer> SingleBucketThreadDispatche
             buckets,
             bucket_index,
             buffer,
-            serializer: S::new(),
+            serializer: S::new(serializer_init_data),
         }
     }
 

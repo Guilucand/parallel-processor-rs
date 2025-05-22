@@ -558,6 +558,7 @@ impl AsyncBinaryReader {
         extra_buffer: S::ExtraDataBuffer,
         allowed_strategy: AllowedCheckpointStrategy<S::CheckpointData>,
         thread_handle: &'a ThreadPriorityHandle,
+        deserializer_init_data: S::InitData,
     ) -> AsyncBinaryReaderItemsIterator<'a, S> {
         let mut opened_file = self.opened_file.read();
         if matches!(*opened_file, OpenedFile::NotOpened) {
@@ -575,7 +576,7 @@ impl AsyncBinaryReader {
             buffer,
             extra_buffer,
             stream,
-            deserializer: S::new(),
+            deserializer: S::new(deserializer_init_data),
         }
     }
 
