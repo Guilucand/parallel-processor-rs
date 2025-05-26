@@ -72,7 +72,13 @@ impl<R: Read> Read for VecReader<R> {
         Ok(self.read_bytes(buf))
     }
 
+    #[inline(always)]
     fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
-        Ok(self.read_bytes(buf)).map(|_| ())
+        let size = self.read_bytes(buf);
+        if size == buf.len() {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, ""))
+        }
     }
 }
