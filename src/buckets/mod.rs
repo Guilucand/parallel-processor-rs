@@ -81,6 +81,7 @@ pub struct MultiChunkBucket {
     pub index: usize,
     pub chunks: Vec<PathBuf>,
     pub was_compacted: bool,
+    pub is_duplicates_bucket: bool,
 }
 
 impl MultiChunkBucket {
@@ -89,6 +90,7 @@ impl MultiChunkBucket {
         SingleBucket {
             index: self.index,
             path: self.chunks.pop().unwrap(),
+            is_duplicates_bucket: self.is_duplicates_bucket,
         }
     }
 }
@@ -96,6 +98,7 @@ impl MultiChunkBucket {
 pub struct SingleBucket {
     pub index: usize,
     pub path: PathBuf,
+    pub is_duplicates_bucket: bool,
 }
 
 impl SingleBucket {
@@ -104,6 +107,7 @@ impl SingleBucket {
             index: self.index,
             chunks: vec![self.path],
             was_compacted: false,
+            is_duplicates_bucket: self.is_duplicates_bucket,
         }
     }
 }
@@ -125,6 +129,12 @@ pub struct MultiThreadBuckets<B: LockFreeBucket> {
     serialized_format_info: Vec<u8>,
 }
 
+pub enum DuplicatesBuckets {
+    None,
+    Last,
+    All,
+}
+
 impl<B: LockFreeBucket> MultiThreadBuckets<B> {
     pub const EMPTY: Self = Self {
         active_buckets: vec![],
@@ -143,6 +153,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         active_disk_usage_limit: Option<u64>,
         init_data: &B::InitData,
         format_info: &impl Serialize,
+        duplicates_buckets: DuplicatesBuckets,
     ) -> MultiThreadBuckets<B> {
         let mut buckets = Vec::with_capacity(size);
 
@@ -160,6 +171,11 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                         index,
                         chunks: vec![],
                         was_compacted: false,
+                        is_duplicates_bucket: match duplicates_buckets {
+                            DuplicatesBuckets::None => false,
+                            DuplicatesBuckets::Last => index == (size - 1),
+                            DuplicatesBuckets::All => true,
+                        },
                     })
                     .collect(),
             ),
@@ -280,6 +296,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                 SingleBucket {
                     index: bucket.index,
                     path: bucket.chunks.pop().unwrap(),
+                    is_duplicates_bucket: bucket.is_duplicates_bucket,
                 }
             })
             .collect()

@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 pub struct ReceiverFuture<'a, T: Sync + Send + 'static, const CHANNELS_COUNT: usize> {
     internal: &'a AsyncChannelInternal<T, CHANNELS_COUNT>,
@@ -136,7 +137,9 @@ impl<T: Sync + Send + 'static, const CHANNELS_COUNT: usize>
                     if let Some(packet) = try_get_item(&self.internal, 0) {
                         return Ok(packet);
                     }
-                    self.internal.blocking_condvar.wait(&mut lock_mutex);
+                    self.internal
+                        .blocking_condvar
+                        .wait_for(&mut lock_mutex, Duration::from_millis(100));
                 }
             }
             Some(packet) => Ok(packet),
@@ -155,6 +158,7 @@ impl<T: Sync + Send + 'static, const CHANNELS_COUNT: usize>
         while let Some(waker) = self.internal.waiting_list.pop() {
             waker.wake();
         }
+        let _lock_mutex = self.internal.blocking_mutex.lock();
         self.internal.blocking_condvar.notify_all();
     }
 
