@@ -1,197 +1,104 @@
-use crate::execution_manager::async_channel::DoublePriorityAsyncChannel;
-use crate::execution_manager::execution_context::{
-    ExecutionContext, ExecutorDropper, PacketsChannel,
+use crate::execution_manager::objects_pool::{PoolObject, PoolObjectTrait};
+use crate::execution_manager::packet::{Packet, PacketTrait};
+use crate::execution_manager::packets_channel::bounded::{
+    PacketsChannelReceiverBounded, PacketsChannelSenderBounded,
 };
-use crate::execution_manager::executor_address::{ExecutorAddress, WeakExecutorAddress};
-use crate::execution_manager::memory_tracker::MemoryTracker;
-use crate::execution_manager::objects_pool::PoolObject;
-use crate::execution_manager::packet::{Packet, PacketTrait, PacketsPool};
-use crate::scheduler::{PriorityScheduler, ThreadPriorityHandle};
-use std::any::Any;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::execution_manager::packets_channel::unbounded::PacketsChannelReceiverUnbounded;
+use crate::execution_manager::thread_pool::ScopedThreadPool;
 use std::sync::Arc;
-use tokio::runtime::Handle;
-
-static EXECUTOR_GLOBAL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub trait AsyncExecutor: Sized + Send + Sync + 'static {
-    type InputPacket: Send + Sync + 'static;
-    type OutputPacket: PacketTrait + Send + Sync + 'static;
+    type InputPacket: PoolObjectTrait;
+    type OutputPacket: PacketTrait;
     type GlobalParams: Send + Sync + 'static;
     type InitData: Send + Sync + Clone + 'static;
-
-    fn generate_new_address(data: Self::InitData) -> ExecutorAddress {
-        let exec = ExecutorAddress {
-            executor_keeper: Arc::new(ExecutorDropper::new()),
-            init_data: Arc::new(data),
-            executor_type_id: std::any::TypeId::of::<Self>(),
-            executor_internal_id: EXECUTOR_GLOBAL_ID.fetch_add(1, Ordering::Relaxed),
-        };
-        exec
-    }
+    const ALLOW_PARALLEL_ADDRESS_EXECUTION: bool;
 
     fn new() -> Self;
 
-    fn async_executor_main<'a>(
+    fn executor_main<'a>(
         &'a mut self,
         global_params: &'a Self::GlobalParams,
         receiver: ExecutorReceiver<Self>,
-        memory_tracker: MemoryTracker<Self>,
-    ) -> impl Future<Output = ()> + Send + 'a;
+    );
+}
+
+pub struct AddressConsumer<E: AsyncExecutor> {
+    pub(crate) init_data: Arc<E::InitData>,
+    pub(crate) packets_queue:
+        Arc<PoolObject<PacketsChannelReceiverBounded<Packet<E::InputPacket>>>>,
+}
+
+impl<E: AsyncExecutor> Clone for AddressConsumer<E> {
+    fn clone(&self) -> Self {
+        AddressConsumer {
+            init_data: self.init_data.clone(),
+            packets_queue: self.packets_queue.clone(),
+        }
+    }
+}
+
+pub struct AddressProducer<P: PoolObjectTrait> {
+    pub(crate) packets_queue: PacketsChannelSenderBounded<Packet<P>>,
+}
+
+impl<P: PoolObjectTrait> AddressProducer<P> {
+    pub fn send_packet(&self, packet: Packet<P>) {
+        self.packets_queue.send(packet);
+    }
 }
 
 pub struct ExecutorReceiver<E: AsyncExecutor> {
-    pub(crate) context: Arc<ExecutionContext>,
-    pub(crate) addresses_channel: DoublePriorityAsyncChannel<(
-        WeakExecutorAddress,
-        Arc<AtomicU64>,
-        Arc<PoolObject<PacketsChannel>>,
-        Arc<dyn Any + Sync + Send + 'static>,
-    )>,
-    pub(crate) _phantom: PhantomData<E>,
+    pub(crate) addresses_receiver: PacketsChannelReceiverUnbounded<AddressConsumer<E>>,
+    pub(crate) thread_pool: Option<Arc<ScopedThreadPool>>,
 }
 
 impl<E: AsyncExecutor> ExecutorReceiver<E> {
-    // pub async fn obtain_address(
-    //     &mut self,
-    // ) -> Result<(ExecutorAddressOperations<E>, Arc<E::InitData>), ()> {
-    //     self.obtain_address_with_priority(0).await
-    // }
-
-    pub async fn obtain_address_with_priority(
-        &mut self,
-        priority: usize,
-        thread_handle: &ThreadPriorityHandle,
-    ) -> Result<(ExecutorAddressOperations<E>, Arc<E::InitData>), ()> {
-        PriorityScheduler::execute_blocking_call_async(thread_handle, async {
-            let (addr, counter, channel, init_data) =
-                self.addresses_channel.recv_offset(priority).await?;
-
-            Ok((
-                ExecutorAddressOperations {
-                    addr,
-                    counter,
-                    channel,
-                    context: self.context.clone(),
-                    is_finished: AtomicBool::new(false),
-                    _phantom: PhantomData,
-                },
-                init_data.downcast().unwrap(),
-            ))
-        })
-        .await
-    }
-}
-
-pub struct ExecutorAddressOperations<'a, E: AsyncExecutor> {
-    addr: WeakExecutorAddress,
-    counter: Arc<AtomicU64>,
-    channel: Arc<PoolObject<PacketsChannel>>,
-    context: Arc<ExecutionContext>,
-    is_finished: AtomicBool,
-    _phantom: PhantomData<&'a E>,
-}
-impl<'a, E: AsyncExecutor> ExecutorAddressOperations<'a, E> {
-    pub async fn receive_packet(
-        &self,
-        handle: &ThreadPriorityHandle,
-    ) -> Option<Packet<E::InputPacket>> {
-        if self.is_finished.load(Ordering::SeqCst) {
-            return None;
-        }
-
-        PriorityScheduler::execute_blocking_call_async(handle, async {
-            match self.channel.recv().await {
-                Ok(packet) => Some(packet.downcast()),
-                Err(()) => {
-                    self.is_finished.store(true, Ordering::SeqCst);
-                    None
-                }
-            }
-        })
-        .await
-    }
-    pub fn declare_addresses(&self, addresses: Vec<ExecutorAddress>, priority: usize) {
-        self.context.register_executors_batch(addresses, priority);
-    }
-    pub async fn pool_alloc_await(
-        &self,
-        new_size: usize,
-        handle: &ThreadPriorityHandle,
-        force: bool,
-    ) -> Arc<PoolObject<PacketsPool<E::OutputPacket>>> {
-        let pool = PriorityScheduler::execute_blocking_call_async(handle, async {
-            self.context.allocate_pool::<E>(force).await.unwrap()
-        })
-        .await;
-        pool.set_size(new_size);
-        pool
-    }
-    pub fn packet_send(
-        &self,
-        address: ExecutorAddress,
-        packet: Packet<E::OutputPacket>,
-        handle: &ThreadPriorityHandle,
-    ) {
-        PriorityScheduler::execute_blocking_call(handle, || {
-            self.context.send_packet(address, packet);
-        })
-    }
-
-    pub fn get_context(&self) -> &ExecutionContext {
-        &self.context
-    }
-
-    pub fn make_spawner(&self) -> ExecutorsSpawner<'a> {
-        ExecutorsSpawner {
-            handles: Vec::new(),
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn get_address(&self) -> WeakExecutorAddress {
-        self.addr
-    }
-}
-
-impl<'a, E: AsyncExecutor> Drop for ExecutorAddressOperations<'a, E> {
-    fn drop(&mut self) {
-        if self.counter.fetch_sub(1, Ordering::SeqCst) <= 1 {
-            self.context.wait_condvar.notify_all();
-        }
-    }
-}
-
-pub struct ExecutorsSpawner<'a> {
-    handles: Vec<tokio::task::JoinHandle<()>>,
-    _phantom: PhantomData<&'a ()>,
-}
-
-impl<'a> ExecutorsSpawner<'a> {
-    pub fn spawn_executor(&mut self, executor: impl Future<Output = ()> + 'a) {
-        let current_runtime = Handle::current();
-        let executor = unsafe {
-            std::mem::transmute::<_, Pin<Box<dyn Future<Output = ()> + Send>>>(
-                Box::pin(executor) as Pin<Box<dyn Future<Output = ()>>>
-            )
+    pub fn obtain_address(&mut self) -> Result<ExecutorAddressOperations<E>, ()> {
+        let address_receiver = match self.addresses_receiver.recv() {
+            Some(value) => value,
+            None => return Err(()),
         };
-        self.handles.push(current_runtime.spawn(executor));
-    }
 
-    pub async fn executors_await(&mut self) {
-        for handle in self.handles.drain(..) {
-            handle.await.unwrap();
+        if E::ALLOW_PARALLEL_ADDRESS_EXECUTION && address_receiver.packets_queue.is_active() {
+            // Reinsert the current address if it is allowed to be run on multiple threads
+            self.addresses_receiver
+                .make_sender()
+                .send(address_receiver.clone());
         }
+
+        Ok(ExecutorAddressOperations {
+            address_data: address_receiver,
+            thread_pool: self.thread_pool.clone(),
+        })
     }
 }
 
-impl<'a> Drop for ExecutorsSpawner<'a> {
-    fn drop(&mut self) {
-        if self.handles.len() > 0 {
-            panic!("Executors not awaited!");
+pub struct ExecutorAddressOperations<E: AsyncExecutor> {
+    address_data: AddressConsumer<E>,
+    thread_pool: Option<Arc<ScopedThreadPool>>,
+}
+impl<E: AsyncExecutor> ExecutorAddressOperations<E> {
+    pub fn receive_packet(&self) -> Option<Packet<E::InputPacket>> {
+        self.address_data.packets_queue.recv()
+    }
+
+    pub fn get_init_data(&self) -> &E::InitData {
+        &self.address_data.init_data
+    }
+
+    pub fn spawn_executors<'a>(
+        &'a self,
+        count: usize,
+        executor: impl Fn(usize) + Send + Sync + 'a,
+    ) {
+        if count == 1 {
+            executor(0);
+        } else {
+            self.thread_pool
+                .as_ref()
+                .unwrap()
+                .run_scoped_optional(count, |i| executor(i));
         }
     }
 }

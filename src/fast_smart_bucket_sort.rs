@@ -1,5 +1,6 @@
 use crate::buckets::bucket_writer::BucketItemSerializer;
-use rand::{thread_rng, RngCore};
+use rand::rng;
+use rand::RngCore;
 use rayon::prelude::*;
 use std::cell::UnsafeCell;
 use std::cmp::min;
@@ -315,7 +316,7 @@ fn smart_radix_sort_<
                     let data = unsafe { from_raw_parts_mut(data_ptr as *mut T, data.len()) };
 
                     let get_bpart = || {
-                        let start = thread_rng().next_u32() as usize % RADIX_SIZE;
+                        let start = rng().next_u32() as usize % RADIX_SIZE;
                         let mut res = None;
                         for i in 0..RADIX_SIZE {
                             let bucket_num = (i + start) % RADIX_SIZE;
@@ -455,12 +456,12 @@ fn smart_radix_sort_<
 #[cfg(test)]
 mod tests {
     use crate::fast_smart_bucket_sort::{fast_smart_radix_sort, SortKey};
-    use rand::{thread_rng, RngCore};
+    use rand::{rng, RngCore};
     use std::time::Instant;
     use voracious_radix_sort::RadixSort;
 
     #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
-    struct DataTypeStruct(u128, [u8; (32 - 16)]);
+    struct DataTypeStruct(u128, [u8; 32 - 16]);
 
     struct U64SortKey;
     impl SortKey<DataTypeStruct> for U64SortKey {
@@ -485,7 +486,7 @@ mod tests {
 
         let mut vec = Vec::with_capacity(ARRAY_SIZE);
 
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         for _ in 0..ARRAY_SIZE {
             vec.push((rng.next_u32()) as u32);
@@ -530,7 +531,7 @@ mod tests {
     //
     //     data.par_iter_mut()
     //         .enumerate()
-    //         .for_each(|(i, x)| *x = DataTypeStruct(thread_rng().gen(), [2; 32 - 16]));
+    //         .for_each(|(i, x)| *x = DataTypeStruct(rng().gen(), [2; 32 - 16]));
     //
     //     crate::log_info!("Started sorting...");
     //     let start = Instant::now();

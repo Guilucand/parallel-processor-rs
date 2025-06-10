@@ -6,11 +6,12 @@ use crate::memory_fs::file::internal::MemoryFileMode;
 use crate::memory_fs::file::reader::FileRangeReference;
 use crate::memory_fs::file::writer::FileWriter;
 use crate::utils::memory_size_to_log2;
+use crate::DEFAULT_BINCODE_CONFIG;
+use bincode::Encode;
 use lz4::{BlockMode, BlockSize, ContentChecksum};
 use mt_debug_counters::counter::AtomicCounterGuardSum;
 use parking_lot::Mutex;
 use replace_with::replace_with_or_abort;
-use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -159,13 +160,14 @@ impl LockFreeBucket for CompressedBinaryWriter {
         }
     }
 
-    fn set_checkpoint_data<T: Serialize>(
+    fn set_checkpoint_data<T: Encode>(
         &self,
         data: Option<&T>,
         passtrough_range: Option<FileRangeReference>,
     ) {
         let mut inner = self.inner.lock();
-        inner.checkpoint_data = data.map(|data| bincode::serialize(data).unwrap());
+        inner.checkpoint_data =
+            data.map(|data| bincode::encode_to_vec(data, DEFAULT_BINCODE_CONFIG).unwrap());
         // Always create a new block on checkpoint data change
         inner.create_new_block(passtrough_range);
     }

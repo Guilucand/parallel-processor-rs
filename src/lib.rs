@@ -1,10 +1,11 @@
-#![cfg_attr(test, feature(type_alias_impl_trait))]
 #![cfg_attr(debug_assertions, deny(warnings))]
 
 #[macro_use]
 pub extern crate mt_debug_counters;
 
 pub use mt_debug_counters::logging::enable_counters_logging;
+
+pub const DEFAULT_BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 #[macro_use]
 pub mod memory_fs;
@@ -16,7 +17,6 @@ pub mod fast_smart_bucket_sort;
 mod logging;
 pub mod memory_data_size;
 pub mod phase_times_monitor;
-pub mod scheduler;
 pub mod utils;
 
 pub use logging::{set_logger_function, LogLevel};

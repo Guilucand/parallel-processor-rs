@@ -3,6 +3,7 @@ use crate::memory_fs::file::internal::{
     FileChunk, MemoryFileInternal, MemoryFileMode, OpenMode, UnderlyingFile,
 };
 use crate::memory_fs::stats;
+use bincode::enc::write::Writer;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
@@ -147,6 +148,13 @@ impl FileWriter {
     }
 
     pub fn flush_async(&self) {}
+}
+
+impl Writer for FileWriter {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), bincode::error::EncodeError> {
+        self.write_all_parallel(bytes, 1);
+        Ok(())
+    }
 }
 
 impl Write for FileWriter {

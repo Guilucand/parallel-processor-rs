@@ -1,9 +1,8 @@
-use crate::execution_manager::async_channel::AsyncChannel;
-use std::cmp::max;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+use crossbeam::queue::ArrayQueue;
 
 pub trait PoolObjectTrait: Send + Sync + 'static {
     type InitData: Clone + Sync + Send;
@@ -23,119 +22,63 @@ impl<T: PoolObjectTrait> PoolObjectTrait for Box<T> {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct PoolReturner<T> {
+    returner: Arc<ArrayQueue<T>>,
+}
+
+// Non blocking pool that caches a fixed number of elements and creates new elements as requested
 pub struct ObjectsPool<T: Sync + Send + 'static> {
-    queue: AsyncChannel<T>,
-    pub(crate) returner: Arc<(AsyncChannel<T>, AtomicU64)>,
+    queue: Arc<ArrayQueue<T>>,
     allocate_fn: Box<dyn (Fn() -> T) + Sync + Send>,
-    max_count: u64,
-    temp_max_count: AtomicU64,
 }
 
-pub trait PoolReturner<T: Send + Sync>: Send + Sync {
-    fn return_element(&self, el: T);
-}
-
-impl<T: PoolObjectTrait> PoolReturner<T> for (AsyncChannel<T>, AtomicU64) {
+impl<T: PoolObjectTrait> PoolReturner<T> {
     fn return_element(&self, mut el: T) {
-        self.1.fetch_sub(1, Ordering::Relaxed);
         el.reset();
-        self.0.send(el, true);
+        // Push it into the queue if the capacity allows it, else deallocates
+        let _ = self.returner.push(el);
     }
 }
 
 impl<T: PoolObjectTrait> ObjectsPool<T> {
-    pub fn new(cap: usize, init_data: T::InitData) -> Self {
-        let channel = AsyncChannel::new(cap);
+    pub fn new(cache_size: usize, init_data: T::InitData) -> Self {
+        let queue = Arc::new(ArrayQueue::new(cache_size));
 
         Self {
-            queue: channel.clone(),
-            returner: Arc::new((channel, AtomicU64::new(0))),
+            queue,
             allocate_fn: Box::new(move || T::allocate_new(&init_data)),
-            max_count: cap as u64,
-            temp_max_count: AtomicU64::new(0),
         }
     }
 
-    pub fn set_size(&self, new_size: usize) {
-        self.temp_max_count
-            .store(new_size as u64, Ordering::Relaxed);
-    }
-
-    #[inline(always)]
-    async fn alloc_wait(&self) -> Result<T, ()> {
-        self.queue.recv().await
-    }
-
-    #[inline(always)]
-    fn alloc_wait_blocking(&self) -> Result<T, ()> {
-        self.queue.recv_blocking()
-    }
-
-    pub async fn alloc_object(&self) -> PoolObject<T> {
-        let el_count = self.returner.1.fetch_add(1, Ordering::Relaxed);
-
-        if el_count >= max(self.max_count, self.temp_max_count.load(Ordering::Relaxed)) {
-            return PoolObject::from_element(self.alloc_wait().await.unwrap(), self);
-        }
-
-        match self.queue.try_recv() {
-            Some(el) => PoolObject::from_element(el, self),
+    pub fn alloc_object(&self) -> PoolObject<T> {
+        match self.queue.pop() {
+            Some(el) => {
+                // Element found in queue, return it
+                PoolObject::from_element(el, self)
+            }
             None => PoolObject::from_element((self.allocate_fn)(), self),
         }
     }
-
-    pub fn alloc_object_blocking(&self) -> PoolObject<T> {
-        let el_count = self.returner.1.fetch_add(1, Ordering::Relaxed);
-
-        if el_count >= max(self.max_count, self.temp_max_count.load(Ordering::Relaxed)) {
-            return PoolObject::from_element(self.alloc_wait_blocking().unwrap(), self);
-        }
-
-        match self.queue.try_recv() {
-            Some(el) => PoolObject::from_element(el, self),
-            None => PoolObject::from_element((self.allocate_fn)(), self),
-        }
-    }
-
-    pub fn alloc_object_force(&self) -> PoolObject<T> {
-        self.returner.1.fetch_add(1, Ordering::Relaxed);
-        match self.queue.try_recv() {
-            Some(el) => PoolObject::from_element(el, self),
-            None => PoolObject::from_element((self.allocate_fn)(), self),
-        }
-    }
-
-    pub fn get_available_items(&self) -> i64 {
-        (max(self.max_count, self.temp_max_count.load(Ordering::Relaxed)) as i64)
-            - (self.returner.1.load(Ordering::Relaxed) as i64)
-    }
-
-    pub fn get_allocated_items(&self) -> i64 {
-        self.returner.1.load(Ordering::Relaxed) as i64
-    }
-
-    // pub fn wait_for_item_timeout(&self, timeout: Duration) {
-    //     if let Ok(recv) = self.queue.recv_timeout(timeout) {
-    //         let _ = self.returner.0.try_send(recv);
-    //     }
-    // }
 }
 
-pub struct PoolObject<T: Send + Sync> {
+pub struct PoolObject<T: PoolObjectTrait> {
     pub(crate) value: ManuallyDrop<T>,
-    pub(crate) returner: Option<Arc<dyn PoolReturner<T>>>,
+    pub(crate) returner: Option<PoolReturner<T>>,
 }
 
 impl<T: PoolObjectTrait> PoolObject<T> {
     fn from_element(value: T, pool: &ObjectsPool<T>) -> Self {
         Self {
             value: ManuallyDrop::new(value),
-            returner: Some(pool.returner.clone()),
+            returner: Some(PoolReturner {
+                returner: pool.queue.clone(),
+            }),
         }
     }
 }
 
-impl<T: Send + Sync> PoolObject<T> {
+impl<T: PoolObjectTrait> PoolObject<T> {
     pub fn new_simple(value: T) -> Self {
         Self {
             value: ManuallyDrop::new(value),
@@ -144,7 +87,7 @@ impl<T: Send + Sync> PoolObject<T> {
     }
 }
 
-impl<T: Send + Sync> Deref for PoolObject<T> {
+impl<T: PoolObjectTrait> Deref for PoolObject<T> {
     type Target = T;
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
@@ -152,14 +95,14 @@ impl<T: Send + Sync> Deref for PoolObject<T> {
     }
 }
 
-impl<T: Send + Sync> DerefMut for PoolObject<T> {
+impl<T: PoolObjectTrait> DerefMut for PoolObject<T> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.value.deref_mut()
     }
 }
 
-impl<T: Send + Sync> Drop for PoolObject<T> {
+impl<T: PoolObjectTrait> Drop for PoolObject<T> {
     fn drop(&mut self) {
         if let Some(returner) = &self.returner {
             returner.return_element(unsafe { ManuallyDrop::take(&mut self.value) });

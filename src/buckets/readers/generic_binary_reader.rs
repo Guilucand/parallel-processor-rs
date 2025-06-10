@@ -3,10 +3,11 @@ use crate::buckets::readers::BucketReader;
 use crate::buckets::writers::{BucketCheckpoints, BucketHeader};
 use crate::memory_fs::file::reader::{FileRangeReference, FileReader};
 use crate::memory_fs::{MemoryFs, RemoveFileMode};
+use crate::DEFAULT_BINCODE_CONFIG;
+use bincode::Decode;
 use desse::Desse;
 use desse::DesseSized;
 use replace_with::replace_with_or_abort;
-use serde::de::DeserializeOwned;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -128,7 +129,8 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         assert_eq!(&header.magic, D::MAGIC_HEADER);
 
         file.seek(SeekFrom::Start(header.index_offset)).unwrap();
-        let index: BucketCheckpoints = bincode::deserialize_from(&mut file).unwrap();
+        let index: BucketCheckpoints =
+            bincode::decode_from_std_read(&mut file, DEFAULT_BINCODE_CONFIG).unwrap();
 
         // crate::log_info!(
         //     "Index: {} for {}",
@@ -155,8 +157,10 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         }
     }
 
-    pub fn get_data_format_info<T: DeserializeOwned>(&self) -> T {
-        bincode::deserialize(&self.format_data_info).unwrap()
+    pub fn get_data_format_info<T: Decode<()>>(&self) -> T {
+        bincode::decode_from_slice(&self.format_data_info, DEFAULT_BINCODE_CONFIG)
+            .unwrap()
+            .0
     }
 
     pub fn get_length(&self) -> usize {
@@ -176,7 +180,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         &mut self.sequential_reader
     }
 
-    pub fn get_read_parallel_stream_with_chunk_type<T: DeserializeOwned>(
+    pub fn get_read_parallel_stream_with_chunk_type<T: Decode<()>>(
         &self,
         allowed_strategy: AllowedCheckpointStrategy<[u8]>,
     ) -> Option<ChunkReader<T, D::ReaderType>> {
@@ -184,11 +188,11 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
             None => None,
             Some(ChunkReader::Reader(stream, data)) => Some(ChunkReader::Reader(
                 stream,
-                data.map(|data| bincode::deserialize(&data).unwrap()),
+                data.map(|data| bincode::decode_from_slice(&data, DEFAULT_BINCODE_CONFIG).unwrap().0),
             )),
             Some(ChunkReader::Passtrough { file_range, data }) => Some(ChunkReader::Passtrough {
                 file_range,
-                data: data.map(|data| bincode::deserialize(&data).unwrap()),
+                data: data.map(|data| bincode::decode_from_slice(&data, DEFAULT_BINCODE_CONFIG).unwrap().0),
             }),
         }
     }

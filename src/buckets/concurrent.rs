@@ -1,5 +1,5 @@
 use crate::buckets::bucket_writer::BucketItemSerializer;
-use crate::buckets::{LockFreeBucket, MultiThreadBuckets};
+use crate::buckets::{BucketsCount, LockFreeBucket, MultiThreadBuckets};
 use crate::memory_data_size::MemoryDataSize;
 use crate::utils::panic_on_drop::PanicOnDrop;
 use std::sync::Arc;
@@ -13,10 +13,10 @@ pub struct BucketsThreadBuffer {
 impl BucketsThreadBuffer {
     pub const EMPTY: Self = Self { buffers: vec![] };
 
-    pub fn new(max_buffer_size: MemoryDataSize, buckets_count: usize) -> Self {
-        let mut buffers = Vec::with_capacity(buckets_count);
+    pub fn new(max_buffer_size: MemoryDataSize, buckets_count: &BucketsCount) -> Self {
+        let mut buffers = Vec::with_capacity(buckets_count.total_buckets_count);
         let capacity = max_buffer_size.as_bytes();
-        for _ in 0..buckets_count {
+        for _ in 0..buckets_count.total_buckets_count {
             buffers.push(Vec::with_capacity(capacity));
         }
 

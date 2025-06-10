@@ -7,9 +7,10 @@ use crate::memory_fs::file::internal::MemoryFileMode;
 use crate::memory_fs::file::reader::FileRangeReference;
 use crate::memory_fs::file::writer::FileWriter;
 use crate::utils::memory_size_to_log2;
+use crate::DEFAULT_BINCODE_CONFIG;
+use bincode::Encode;
 use mt_debug_counters::counter::AtomicCounterGuardSum;
 use parking_lot::Mutex;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -79,12 +80,12 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         }
     }
 
-    fn set_checkpoint_data<T: Serialize>(
+    fn set_checkpoint_data<T: Encode>(
         &self,
         data: Option<&T>,
         passtrough_range: Option<FileRangeReference>,
     ) {
-        let data = data.map(|data| bincode::serialize(data).unwrap());
+        let data = data.map(|data| bincode::encode_to_vec(data, DEFAULT_BINCODE_CONFIG).unwrap());
         *self.checkpoint_data.lock() = data.clone();
         // Always create a new block on checkpoint data change
 

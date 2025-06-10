@@ -1,7 +1,7 @@
-use crate::memory_fs::file::writer::FileWriter;
+use crate::{memory_fs::file::writer::FileWriter, DEFAULT_BINCODE_CONFIG};
+use bincode::{Decode, Encode};
 use desse::{Desse, DesseSized};
 use mt_debug_counters::counter::{AtomicCounter, SumMode};
-use serde::{Deserialize, Serialize};
 use std::io::Write;
 
 use super::CheckpointData;
@@ -23,7 +23,7 @@ impl BucketHeader {
     pub const MAX_DATA_FORMAT_INFO_SIZE: usize = 32;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Encode, Decode)]
 pub(crate) struct BucketCheckpoints {
     pub index: Vec<CheckpointData>,
 }
@@ -44,7 +44,12 @@ pub(crate) fn finalize_bucket_file(
 ) {
     file.flush().unwrap();
     let index_position = file.len() as u64;
-    bincode::serialize_into(&mut file, &BucketCheckpoints { index: checkpoints }).unwrap();
+    bincode::encode_into_writer(
+        &BucketCheckpoints { index: checkpoints },
+        &mut file,
+        DEFAULT_BINCODE_CONFIG,
+    )
+    .unwrap();
 
     let data_format_info = {
         let mut array = [0; 32];

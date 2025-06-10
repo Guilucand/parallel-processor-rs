@@ -1,7 +1,6 @@
+use bincode::{Decode, Encode};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use serde_json::to_string_pretty;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs::File;
 use std::io::Write;
@@ -33,7 +32,7 @@ impl AllocationInfo {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Encode, Decode, Clone, Debug)]
 struct AllocationInfoWritable {
     bt: String,
     current_count: usize,
@@ -62,7 +61,7 @@ pub fn debug_print_allocations(dir: impl AsRef<Path>, period: Duration) {
 
             let _ = File::create(path)
                 .unwrap()
-                .write_all(to_string_pretty(&allocations).unwrap().as_bytes());
+                .write_all(format!("{:?}", allocations).as_bytes());
 
             count += 1;
         }

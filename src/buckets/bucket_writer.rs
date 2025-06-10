@@ -3,7 +3,7 @@ use std::{
     marker::PhantomData,
 };
 
-use serde::{de::DeserializeOwned, Serialize};
+use bincode::{Decode, Encode};
 
 pub trait BucketItemSerializer {
     type InputElementType<'a>: ?Sized;
@@ -13,7 +13,7 @@ pub trait BucketItemSerializer {
     type ReadType<'a>;
     type InitData;
 
-    type CheckpointData: Serialize + DeserializeOwned + 'static;
+    type CheckpointData: Encode + Decode<()> + 'static;
 
     /// Creates a new instance
     fn new(init_data: Self::InitData) -> Self;

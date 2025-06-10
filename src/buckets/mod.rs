@@ -1,12 +1,13 @@
 use arc_swap::ArcSwap;
+use bincode::{Decode, Encode};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::memory_fs::file::reader::FileRangeReference;
+use crate::DEFAULT_BINCODE_CONFIG;
 
 pub mod bucket_writer;
 pub mod concurrent;
@@ -17,13 +18,13 @@ pub mod writers;
 /// This enum serves as a way to specifying the behavior of the
 /// bucket portions created after setting the checkpoint data.
 /// If set on passtrough there is the option to directly read binary data and copy it somewhere else
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Encode, Decode, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CheckpointStrategy {
     Decompress,
     Passtrough,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Encode, Decode, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckpointData {
     offset: u64,
     data: Option<Vec<u8>>,
@@ -51,21 +52,16 @@ pub trait LockFreeBucket: Sized {
         data_format: &[u8],
     ) -> Self;
 
-    fn new<T: Serialize>(
-        path: &Path,
-        data: &Self::InitData,
-        index: usize,
-        data_format: &T,
-    ) -> Self {
+    fn new<T: Encode>(path: &Path, data: &Self::InitData, index: usize, data_format: &T) -> Self {
         Self::new_serialized_data_format(
             path,
             data,
             index,
-            &bincode::serialize(data_format).unwrap(),
+            &bincode::encode_to_vec(data_format, DEFAULT_BINCODE_CONFIG).unwrap(),
         )
     }
 
-    fn set_checkpoint_data<T: Serialize>(
+    fn set_checkpoint_data<T: Encode>(
         &self,
         data: Option<&T>,
         passtrough_range: Option<FileRangeReference>,
@@ -81,7 +77,7 @@ pub struct MultiChunkBucket {
     pub index: usize,
     pub chunks: Vec<PathBuf>,
     pub was_compacted: bool,
-    pub is_duplicates_bucket: bool,
+    pub extra_bucket_data: Option<ExtraBucketData>,
 }
 
 impl MultiChunkBucket {
@@ -90,7 +86,7 @@ impl MultiChunkBucket {
         SingleBucket {
             index: self.index,
             path: self.chunks.pop().unwrap(),
-            is_duplicates_bucket: self.is_duplicates_bucket,
+            extra_bucket_data: self.extra_bucket_data,
         }
     }
 }
@@ -98,7 +94,7 @@ impl MultiChunkBucket {
 pub struct SingleBucket {
     pub index: usize,
     pub path: PathBuf,
-    pub is_duplicates_bucket: bool,
+    pub extra_bucket_data: Option<ExtraBucketData>,
 }
 
 impl SingleBucket {
@@ -107,7 +103,7 @@ impl SingleBucket {
             index: self.index,
             chunks: vec![self.path],
             was_compacted: false,
-            is_duplicates_bucket: self.is_duplicates_bucket,
+            extra_bucket_data: self.extra_bucket_data,
         }
     }
 }
@@ -116,6 +112,45 @@ impl SingleBucket {
 pub enum ChunkingStatus {
     SameChunk,
     NewChunks { bucket_indexes: Vec<u16> },
+}
+
+#[derive(Encode, Decode, Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BucketsCount {
+    pub normal_buckets_count: usize,
+    pub normal_buckets_count_log: usize,
+    pub total_buckets_count: usize,
+    pub extra_buckets_count: ExtraBuckets,
+}
+
+impl BucketsCount {
+    pub const ONE: Self = Self::new(0, ExtraBuckets::None);
+
+    pub fn from_power_of_two(size: usize, extra_buckets: ExtraBuckets) -> Self {
+        assert_eq!(size, size.next_power_of_two());
+        Self::new(size.ilog2() as usize, extra_buckets)
+    }
+
+    pub const fn new(size_log: usize, extra_buckets: ExtraBuckets) -> Self {
+        let normal_buckets_count = 1 << size_log;
+        let extra_buckets_count = match extra_buckets {
+            ExtraBuckets::None => 0,
+            ExtraBuckets::Extra { count, .. } => count,
+        };
+
+        Self {
+            normal_buckets_count,
+            normal_buckets_count_log: size_log,
+            total_buckets_count: normal_buckets_count + extra_buckets_count,
+            extra_buckets_count: extra_buckets,
+        }
+    }
+
+    pub fn get_extra_buckets_count(&self) -> usize {
+        match self.extra_buckets_count {
+            ExtraBuckets::None => 0,
+            ExtraBuckets::Extra { count, .. } => count,
+        }
+    }
 }
 
 pub struct MultiThreadBuckets<B: LockFreeBucket> {
@@ -127,12 +162,16 @@ pub struct MultiThreadBuckets<B: LockFreeBucket> {
     base_path: Option<PathBuf>,
     init_data: Option<B::InitData>,
     serialized_format_info: Vec<u8>,
+    size: BucketsCount,
 }
 
-pub enum DuplicatesBuckets {
+#[derive(Encode, Decode, Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ExtraBucketData(pub usize);
+
+#[derive(Encode, Decode, Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ExtraBuckets {
     None,
-    Last,
-    All,
+    Extra { count: usize, data: ExtraBucketData },
 }
 
 impl<B: LockFreeBucket> MultiThreadBuckets<B> {
@@ -145,19 +184,28 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         base_path: None,
         init_data: None,
         serialized_format_info: vec![],
+        size: BucketsCount {
+            normal_buckets_count: 0,
+            normal_buckets_count_log: 0,
+            total_buckets_count: 0,
+            extra_buckets_count: ExtraBuckets::None,
+        },
     };
 
+    pub fn get_buckets_count(&self) -> &BucketsCount {
+        &self.size
+    }
+
     pub fn new(
-        size: usize,
+        size: BucketsCount,
         path: PathBuf,
         active_disk_usage_limit: Option<u64>,
         init_data: &B::InitData,
-        format_info: &impl Serialize,
-        duplicates_buckets: DuplicatesBuckets,
+        format_info: &impl Encode,
     ) -> MultiThreadBuckets<B> {
-        let mut buckets = Vec::with_capacity(size);
+        let mut buckets = Vec::with_capacity(size.total_buckets_count);
 
-        for i in 0..size {
+        for i in 0..size.total_buckets_count {
             buckets.push(ArcSwap::from_pointee((
                 AtomicU64::new(0),
                 B::new(&path, init_data, i, format_info),
@@ -166,25 +214,32 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         MultiThreadBuckets {
             active_buckets: buckets,
             stored_buckets: Mutex::new(
-                (0..size)
+                (0..size.total_buckets_count)
                     .map(|index| MultiChunkBucket {
                         index,
                         chunks: vec![],
                         was_compacted: false,
-                        is_duplicates_bucket: match duplicates_buckets {
-                            DuplicatesBuckets::None => false,
-                            DuplicatesBuckets::Last => index == (size - 1),
-                            DuplicatesBuckets::All => true,
+                        extra_bucket_data: match size.extra_buckets_count {
+                            ExtraBuckets::None => None,
+                            ExtraBuckets::Extra { data, .. } => {
+                                if index >= size.normal_buckets_count {
+                                    Some(data)
+                                } else {
+                                    None
+                                }
+                            }
                         },
                     })
                     .collect(),
             ),
             disk_usage: AtomicU64::new(0),
             active_disk_usage_limit: active_disk_usage_limit.map(NonZeroU64::new).flatten(),
-            bucket_count_lock: Mutex::new(size),
+            bucket_count_lock: Mutex::new(size.total_buckets_count),
             base_path: Some(path),
             init_data: Some(init_data.clone()),
-            serialized_format_info: bincode::serialize(format_info).unwrap(),
+            serialized_format_info: bincode::encode_to_vec(format_info, DEFAULT_BINCODE_CONFIG)
+                .unwrap(),
+            size,
         }
     }
 
@@ -282,10 +337,6 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         }
     }
 
-    pub fn count(&self) -> usize {
-        self.active_buckets.len()
-    }
-
     pub fn finalize_single(self: Arc<Self>) -> Vec<SingleBucket> {
         assert!(self.active_disk_usage_limit.is_none());
         let buckets = self.finalize();
@@ -296,7 +347,7 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                 SingleBucket {
                     index: bucket.index,
                     path: bucket.chunks.pop().unwrap(),
-                    is_duplicates_bucket: bucket.is_duplicates_bucket,
+                    extra_bucket_data: bucket.extra_bucket_data,
                 }
             })
             .collect()
