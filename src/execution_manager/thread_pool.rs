@@ -10,7 +10,9 @@ use crate::execution_manager::packets_channel::bounded::{
 use crate::execution_manager::packets_channel::unbounded::{
     packets_channel_unbounded, PacketsChannelSenderUnbounded,
 };
-use crate::execution_manager::scheduler::{init_current_thread, uninit_current_thread, Scheduler};
+use crate::execution_manager::scheduler::{
+    init_current_thread, run_blocking_op, uninit_current_thread, Scheduler,
+};
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -284,9 +286,11 @@ impl ScopedThreadPool {
             drop(function_lt_extended);
             // Wait for all the running tasks to terminate
             if task_data.running_count.load(Ordering::SeqCst) > 0 {
-                task_data
-                    .running_notifier
-                    .wait_for_condition(|| task_data.running_count.load(Ordering::SeqCst) == 0);
+                run_blocking_op(|| {
+                    task_data
+                        .running_notifier
+                        .wait_for_condition(|| task_data.running_count.load(Ordering::SeqCst) == 0);
+                });
             }
         }
     }

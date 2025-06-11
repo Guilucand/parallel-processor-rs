@@ -42,20 +42,6 @@ impl Notifier {
         }
     }
 
-    pub fn wait_for_time(&self, timeout: std::time::Instant) {
-        let key = &self.status as *const AtomicUsize as usize;
-        let _ = unsafe {
-            parking_lot_core::park(
-                key,
-                || true,
-                || {},
-                |_, _| {},
-                DEFAULT_PARK_TOKEN,
-                Some(timeout),
-            )
-        };
-    }
-
     #[inline(always)]
     pub fn wait_for_condition(&self, mut checker: impl FnMut() -> bool) {
         while !checker() {
@@ -69,12 +55,17 @@ impl Notifier {
     #[inline(never)]
     fn wait_for_condition_slow(&self, checker: &mut impl FnMut() -> bool) -> bool {
         let key = &self.status as *const AtomicUsize as usize;
+
         self.status.store(Self::WAITING, Ordering::SeqCst);
 
+        let mut condition_ok = false;
         match unsafe {
             parking_lot_core::park(
                 key,
-                || !checker(),
+                || {
+                    condition_ok = checker();
+                    !condition_ok && self.status.load(Ordering::SeqCst) == Self::WAITING
+                },
                 || {},
                 |_, _| {},
                 DEFAULT_PARK_TOKEN,
@@ -86,8 +77,8 @@ impl Notifier {
                 false
             }
             parking_lot_core::ParkResult::Invalid => {
-                // Condition already satisfied
-                true
+                // Condition can be satisfied
+                condition_ok
             }
             parking_lot_core::ParkResult::TimedOut => unsafe { unreachable_unchecked() },
         }

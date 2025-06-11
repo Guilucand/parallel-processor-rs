@@ -258,24 +258,23 @@ pub mod bounded {
 
 pub mod unbounded {
     use crate::execution_manager::{
-        notifier::Notifier,
         packets_channel::{PacketsChannelReceiver, PacketsChannelSender, PacketsQueue},
         scheduler::run_blocking_op,
     };
-    use parking_lot::Mutex;
+    use parking_lot::{Condvar, Mutex};
     use std::{
         collections::VecDeque,
         sync::{
             atomic::{AtomicBool, AtomicUsize},
             Arc,
         },
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     pub(crate) struct UnboundedQueue<T> {
         queue: Mutex<VecDeque<T>>,
-        receivers_waiting: Notifier,
-        senders_waiting: Notifier,
+        receivers_waiting: Condvar,
+        senders_waiting: Condvar,
         senders_count: AtomicUsize,
     }
 
@@ -299,24 +298,26 @@ pub mod unbounded {
                 drop(queue);
                 Some(value)
             } else {
-                drop(queue);
-                let mut value = None;
-                run_blocking_op(|| {
-                    self.receivers_waiting.wait_for_condition(|| {
-                        match self.queue.lock().pop_front() {
-                            Some(v) => {
-                                value = Some(v);
-                                true
-                            }
-                            None => {
-                                self.senders_count
-                                    .load(std::sync::atomic::Ordering::Relaxed)
-                                    == 0
+                run_blocking_op(|| loop {
+                    match queue.pop_front() {
+                        Some(v) => {
+                            drop(queue);
+                            return Some(v);
+                        }
+                        None => {
+                            if self
+                                .senders_count
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                == 0
+                            {
+                                drop(queue);
+                                return None;
+                            } else {
+                                self.receivers_waiting.wait(&mut queue);
                             }
                         }
-                    });
-                });
-                value
+                    }
+                })
             };
             self.senders_waiting.notify_one();
             value
@@ -339,6 +340,7 @@ pub mod unbounded {
                 .senders_count
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             if senders_count == 1 {
+                let _lock = self.queue.lock();
                 self.receivers_waiting.notify_all();
             }
         }
@@ -360,12 +362,11 @@ pub mod unbounded {
         ) {
             if let Some(max_in_queue) = max_in_queue {
                 run_blocking_op(|| {
-                    while self.queue.len() > max_in_queue {
-                        self.queue.senders_waiting.wait_for_time(
-                            Instant::now()
-                                .checked_add(Duration::from_millis(50))
-                                .unwrap(),
-                        );
+                    let mut queue = self.queue.queue.lock();
+                    while queue.len() > max_in_queue {
+                        self.queue
+                            .senders_waiting
+                            .wait_for(&mut queue, Duration::from_millis(50));
                     }
                 });
             }
@@ -405,8 +406,8 @@ pub mod unbounded {
     ) {
         let internal = Arc::new(UnboundedQueue {
             queue: Mutex::new(VecDeque::with_capacity(64)),
-            receivers_waiting: Notifier::new(),
-            senders_waiting: Notifier::new(),
+            receivers_waiting: Condvar::new(),
+            senders_waiting: Condvar::new(),
             senders_count: AtomicUsize::new(1),
         });
         (

@@ -80,16 +80,20 @@ pub fn uninit_current_thread() {
     });
 }
 
+#[inline(never)]
+#[cold]
 pub fn run_blocking_op<T>(f: impl FnOnce() -> T) -> T {
     let Some(guard) = SCHEDULER_GUARD.with(|guard| unsafe { &mut *guard.get() }.as_mut()) else {
         return f();
     };
 
-    guard
+    let active = guard
         .scheduler
         .current_running
         .fetch_sub(1, Ordering::Relaxed);
     guard.scheduler.notifier.notify_one();
+
+    assert!(active > 0);
 
     let value = f();
 
