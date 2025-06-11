@@ -3,7 +3,7 @@
 
 [package]
 name = "parallel-processor"
-version = "0.1.28"
+version = "0.1.29"
 authors = ["Andrea Cracco <guilucand@gmail.com>"]
 edition = "2021"
 categories = []
