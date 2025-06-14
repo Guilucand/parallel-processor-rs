@@ -183,16 +183,25 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
     pub fn get_read_parallel_stream_with_chunk_type<T: Decode<()>>(
         &self,
         allowed_strategy: AllowedCheckpointStrategy<[u8]>,
+        index: Option<usize>,
     ) -> Option<ChunkReader<T, D::ReaderType>> {
-        match self.get_read_parallel_stream(allowed_strategy) {
+        match self.get_read_parallel_stream(allowed_strategy, index) {
             None => None,
             Some(ChunkReader::Reader(stream, data)) => Some(ChunkReader::Reader(
                 stream,
-                data.map(|data| bincode::decode_from_slice(&data, DEFAULT_BINCODE_CONFIG).unwrap().0),
+                data.map(|data| {
+                    bincode::decode_from_slice(&data, DEFAULT_BINCODE_CONFIG)
+                        .unwrap()
+                        .0
+                }),
             )),
             Some(ChunkReader::Passtrough { file_range, data }) => Some(ChunkReader::Passtrough {
                 file_range,
-                data: data.map(|data| bincode::decode_from_slice(&data, DEFAULT_BINCODE_CONFIG).unwrap().0),
+                data: data.map(|data| {
+                    bincode::decode_from_slice(&data, DEFAULT_BINCODE_CONFIG)
+                        .unwrap()
+                        .0
+                }),
             }),
         }
     }
@@ -200,8 +209,10 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
     pub fn get_read_parallel_stream(
         &self,
         allowed_strategy: AllowedCheckpointStrategy<[u8]>,
+        index: Option<usize>,
     ) -> Option<ChunkReader<Vec<u8>, D::ReaderType>> {
-        let index = self.parallel_index.fetch_add(1, Ordering::Relaxed) as usize;
+        let index =
+            index.unwrap_or_else(|| self.parallel_index.fetch_add(1, Ordering::Relaxed) as usize);
 
         if index >= self.sequential_reader.index.index.len() {
             return None;
@@ -253,7 +264,7 @@ impl<D: ChunkDecoder> GenericChunkedBinaryReader<D> {
         deserializer_init_data: S::InitData,
     ) -> Option<DecodeItemsStatus<S::CheckpointData>> {
         let stream = match self
-            .get_read_parallel_stream_with_chunk_type::<S::CheckpointData>(allowed_strategy)
+            .get_read_parallel_stream_with_chunk_type::<S::CheckpointData>(allowed_strategy, None)
         {
             None => return None,
             Some(stream) => stream,

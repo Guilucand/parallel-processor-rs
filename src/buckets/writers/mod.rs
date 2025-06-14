@@ -33,7 +33,7 @@ pub(crate) fn initialize_bucket_file(file: &mut FileWriter) -> u64 {
     file.write_all(&BucketHeader::default().serialize()[..])
         .unwrap();
 
-    file.len() as u64
+    file.len()
 }
 
 pub(crate) fn finalize_bucket_file(

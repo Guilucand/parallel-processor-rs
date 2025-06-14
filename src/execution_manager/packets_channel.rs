@@ -353,6 +353,17 @@ pub mod unbounded {
     }
 
     impl<T> PacketsChannelSenderUnbounded<T> {
+        fn wait_for_space(&self, max_in_queue: usize) {
+            run_blocking_op(|| {
+                let mut queue = self.queue.queue.lock();
+                while queue.len() > max_in_queue {
+                    self.queue
+                        .senders_waiting
+                        .wait_for(&mut queue, Duration::from_millis(50));
+                }
+            });
+        }
+
         #[inline(always)]
         pub fn send_batch(
             &self,
@@ -361,14 +372,7 @@ pub mod unbounded {
             high_priority: bool,
         ) {
             if let Some(max_in_queue) = max_in_queue {
-                run_blocking_op(|| {
-                    let mut queue = self.queue.queue.lock();
-                    while queue.len() > max_in_queue {
-                        self.queue
-                            .senders_waiting
-                            .wait_for(&mut queue, Duration::from_millis(50));
-                    }
-                });
+                self.wait_for_space(max_in_queue);
             }
 
             let mut queue = self.queue.queue.lock();
@@ -385,7 +389,16 @@ pub mod unbounded {
             self.queue.receivers_waiting.notify_all();
         }
 
-        pub fn send_with_priority(&self, value: T, high_priority: bool) {
+        pub fn send_with_priority(
+            &self,
+            value: T,
+            high_priority: bool,
+            max_in_queue: Option<usize>,
+        ) {
+            if let Some(max_in_queue) = max_in_queue {
+                self.wait_for_space(max_in_queue);
+            }
+
             let mut queue = self.queue.queue.lock();
             if high_priority {
                 queue.push_front(value);

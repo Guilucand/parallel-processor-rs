@@ -12,7 +12,6 @@ use parking_lot::Mutex;
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::allocator::CHUNKS_ALLOCATOR;
 use crate::memory_fs::file::internal::{MemoryFileInternal, SWAPPABLE_FILES};
-use nightly_quirks::utils::NightlyUtils;
 
 pub const O_DIRECT: i32 = 0x4000;
 
@@ -116,24 +115,7 @@ impl MemoryFs {
         let (current, max_size) = GlobalFlush::global_queue_occupation();
         if current * 3 < max_size {
             let mut map_lock = SWAPPABLE_FILES.lock();
-            let map_lock_mut =
-                NightlyUtils::mutex_get_or_init(&mut map_lock, || FxHashMap::default());
-
-            let mut file_ref = None;
-
-            for (key, file) in map_lock_mut.iter() {
-                if let Some(file) = file.upgrade() {
-                    let file_read = file.read();
-                    if file_read.is_memory_preferred() && file_read.has_flush_pending_chunks() {
-                        drop(file_read);
-                        file_ref = Some((key.clone(), file));
-                        break;
-                    }
-                }
-            }
-
-            if let Some((key, file)) = file_ref {
-                map_lock_mut.remove(&key);
+            if let Some(file) = map_lock.get_next() {
                 drop(map_lock);
                 let mut file = file.write();
                 file.change_to_disk_only();

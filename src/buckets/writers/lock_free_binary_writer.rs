@@ -108,7 +108,11 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         });
     }
 
-    fn write_data(&self, bytes: &[u8]) {
+    fn get_bucket_size(&self) -> u64 {
+        self.file_size.load(Ordering::Relaxed)
+    }
+
+    fn write_data(&self, bytes: &[u8]) -> u64 {
         let stat_raii = AtomicCounterGuardSum::new(&THREADS_BUSY_WRITING, 1);
 
         // let _lock = self.checkpoints.lock();
@@ -127,6 +131,8 @@ impl LockFreeBucket for LockFreeBinaryWriter {
         }
 
         drop(stat_raii);
+
+        old_size + bytes.len() as u64
     }
 
     fn get_path(&self) -> PathBuf {

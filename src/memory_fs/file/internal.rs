@@ -4,27 +4,67 @@ use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
 use crate::memory_fs::stats;
 use dashmap::DashMap;
 use filebuffer::FileBuffer;
-use nightly_quirks::utils::NightlyUtils;
 use once_cell::sync::Lazy;
-use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard, RawMutex};
+use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard};
 use parking_lot::{Mutex, RawRwLock, RwLock};
 use replace_with::replace_with_or_abort;
 use rustc_hash::FxHashMap;
 use std::cmp::min;
+use std::collections::BinaryHeap;
 use std::fs::remove_file;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, LazyLock, Weak};
 
 use super::handle::FileHandle;
 
 static MEMORY_MAPPED_FILES: Lazy<DashMap<PathBuf, Arc<RwLock<MemoryFileInternal>>>> =
     Lazy::new(|| DashMap::new());
 
-pub static SWAPPABLE_FILES: Mutex<
-    Option<FxHashMap<(usize, PathBuf), Weak<RwLock<MemoryFileInternal>>>>,
-> = Mutex::const_new(parking_lot::RawMutex::INIT, None);
+#[derive(Default)]
+pub struct SwappableFiles {
+    index: FxHashMap<PathBuf, Weak<RwLock<MemoryFileInternal>>>,
+    queue: BinaryHeap<(usize, PathBuf)>,
+}
+
+impl SwappableFiles {
+    pub fn add_file(
+        &mut self,
+        priority: usize,
+        path: PathBuf,
+        file: Weak<RwLock<MemoryFileInternal>>,
+    ) {
+        self.index.insert(path.clone(), file);
+        self.queue.push((priority, path));
+    }
+
+    pub fn remove_file(&mut self, path: &Path) {
+        self.index.remove(path);
+    }
+
+    pub fn get_next(&mut self) -> Option<Arc<RwLock<MemoryFileInternal>>> {
+        while let Some((_, file)) = self.queue.pop() {
+            if let Some(file_entry) = self.index.remove(&file) {
+                if let Some(file_entry) = file_entry.upgrade() {
+                    let file_read = file_entry.read();
+                    if file_read.is_memory_preferred() && file_read.has_flush_pending_chunks() {
+                        drop(file_read);
+                        return Some(file_entry);
+                    } else {
+                        // Remove the file if it cannot be swapped
+                        file_read.on_swap_list.store(false, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+pub static SWAPPABLE_FILES: LazyLock<Mutex<SwappableFiles>> =
+    LazyLock::new(|| Mutex::new(Default::default()));
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum MemoryFileMode {
@@ -215,11 +255,8 @@ impl MemoryFileInternal {
             if remove_fs {
                 match file.1.read().memory_mode {
                     MemoryFileMode::AlwaysMemory => {}
-                    MemoryFileMode::PreferMemory { swap_priority } => {
-                        NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || {
-                            FxHashMap::default()
-                        })
-                        .remove(&(swap_priority, path.as_ref().to_path_buf()));
+                    MemoryFileMode::PreferMemory { .. } => {
+                        SWAPPABLE_FILES.lock().remove_file(path.as_ref())
                     }
                     MemoryFileMode::DiskOnly => {
                         if let Ok(file_meta) = std::fs::metadata(path.as_ref()) {
@@ -342,11 +379,9 @@ impl MemoryFileInternal {
     fn put_on_swappable_list(self_: &ArcRwLockWriteGuard<RawRwLock, Self>) {
         if let MemoryFileMode::PreferMemory { swap_priority } = self_.memory_mode {
             if !self_.on_swap_list.swap(true, Ordering::Relaxed) {
-                NightlyUtils::mutex_get_or_init(&mut SWAPPABLE_FILES.lock(), || {
-                    FxHashMap::default()
-                })
-                .insert(
-                    (swap_priority, self_.path.clone()),
+                SWAPPABLE_FILES.lock().add_file(
+                    swap_priority,
+                    self_.path.clone(),
                     Arc::downgrade(ArcRwLockWriteGuard::rwlock(self_)),
                 );
             }

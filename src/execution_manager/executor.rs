@@ -5,7 +5,7 @@ use crate::execution_manager::packets_channel::bounded::{
 };
 use crate::execution_manager::packets_channel::unbounded::PacketsChannelReceiverUnbounded;
 use crate::execution_manager::thread_pool::ScopedThreadPool;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier, BarrierWaitResult};
 
 pub trait AsyncExecutor: Sized + Send + Sync + 'static {
     type InputPacket: PoolObjectTrait;
@@ -51,6 +51,7 @@ impl<P: PoolObjectTrait> AddressProducer<P> {
 pub struct ExecutorReceiver<E: AsyncExecutor> {
     pub(crate) addresses_receiver: PacketsChannelReceiverUnbounded<AddressConsumer<E>>,
     pub(crate) thread_pool: Option<Arc<ScopedThreadPool>>,
+    pub(crate) barrier: Arc<Barrier>,
 }
 
 impl<E: AsyncExecutor> ExecutorReceiver<E> {
@@ -71,6 +72,10 @@ impl<E: AsyncExecutor> ExecutorReceiver<E> {
             address_data: address_receiver,
             thread_pool: self.thread_pool.clone(),
         })
+    }
+
+    pub fn wait_for_executors(&self) -> BarrierWaitResult {
+        self.barrier.wait()
     }
 }
 

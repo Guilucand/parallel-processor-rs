@@ -35,9 +35,9 @@ impl FileWriter {
         }
     }
 
-    /// Returns the total length of the file (slow method)
-    pub fn len(&self) -> usize {
-        self.file.read().len() + self.current_buffer.read().len()
+    /// Returns the total length of the file
+    pub fn len(&self) -> u64 {
+        self.file_length.load(Ordering::Relaxed) + self.current_buffer.read().len() as u64
     }
 
     /// Overwrites bytes at the start of the file, the data field should not be longer than 128 bytes

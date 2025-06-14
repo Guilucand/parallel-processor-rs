@@ -22,8 +22,14 @@ use super::BucketReader;
 #[derive(Clone)]
 enum OpenedFile {
     NotOpened,
-    Plain(Arc<LockFreeBinaryReader>),
-    Compressed(Arc<CompressedBinaryReader>),
+    Plain {
+        reader: Arc<LockFreeBinaryReader>,
+        chunks_list: Option<Vec<usize>>,
+    },
+    Compressed {
+        reader: Arc<CompressedBinaryReader>,
+        chunks_list: Option<Vec<usize>>,
+    },
     Finished,
 }
 
@@ -32,24 +38,24 @@ impl OpenedFile {
         match self {
             OpenedFile::NotOpened => false,
             OpenedFile::Finished => true,
-            OpenedFile::Plain(f) => f.is_finished(),
-            OpenedFile::Compressed(f) => f.is_finished(),
+            OpenedFile::Plain { reader, .. } => reader.is_finished(),
+            OpenedFile::Compressed { reader, .. } => reader.is_finished(),
         }
     }
 
     #[allow(dead_code)]
     pub fn get_path(&self) -> PathBuf {
         match self {
-            OpenedFile::Plain(f) => f.get_name(),
-            OpenedFile::Compressed(f) => f.get_name(),
+            OpenedFile::Plain { reader, .. } => reader.get_name(),
+            OpenedFile::Compressed { reader, .. } => reader.get_name(),
             _ => panic!("File not opened"),
         }
     }
 
     pub fn get_chunks_count(&self) -> usize {
         match self {
-            OpenedFile::Plain(file) => file.get_chunks_count(),
-            OpenedFile::Compressed(file) => file.get_chunks_count(),
+            OpenedFile::Plain { reader, .. } => reader.get_chunks_count(),
+            OpenedFile::Compressed { reader, .. } => reader.get_chunks_count(),
             OpenedFile::NotOpened | OpenedFile::Finished => 0,
         }
     }
@@ -156,6 +162,7 @@ impl AsyncReaderThread {
                 stream: &mut Option<ChunkReader<Vec<u8>, D::ReaderType>>,
                 allowed_strategy: AllowedCheckpointStrategy<[u8]>,
                 cached_buffer: &mut Option<Vec<u8>>,
+                mut chunk_indexes: Option<&mut Vec<usize>>,
             ) -> Option<AsyncReaderBuffer> {
                 let mut total_read_bytes = 0;
                 let mut checkpoint_data = None;
@@ -165,7 +172,13 @@ impl AsyncReaderThread {
                     if stream.is_none() {
                         is_continuation = false;
 
-                        *stream = file.get_read_parallel_stream(allowed_strategy.clone());
+                        *stream = match &mut chunk_indexes {
+                            Some(chunk_indexes) => chunk_indexes.pop().map(|index| {
+                                file.get_read_parallel_stream(allowed_strategy.clone(), Some(index))
+                                    .unwrap()
+                            }),
+                            None => file.get_read_parallel_stream(allowed_strategy.clone(), None),
+                        };
 
                         match &stream {
                             Some(stream_) => match stream_ {
@@ -230,17 +243,25 @@ impl AsyncReaderThread {
                     let _ = self.buffers_pool.0.send(cached_buffer.take().unwrap());
                     continue;
                 }
-                OpenedFile::Plain(file) => read_buffer(
-                    &file,
+                OpenedFile::Plain {
+                    reader,
+                    chunks_list,
+                } => read_buffer(
+                    reader,
                     &mut current_stream_uncompr,
                     allowed_strategy,
                     &mut cached_buffer,
+                    chunks_list.as_mut(),
                 ),
-                OpenedFile::Compressed(file) => read_buffer(
-                    file,
+                OpenedFile::Compressed {
+                    reader,
+                    chunks_list,
+                } => read_buffer(
+                    reader,
                     &mut current_stream_compr,
                     allowed_strategy,
                     &mut cached_buffer,
+                    chunks_list.as_mut(),
                 ),
             };
 
@@ -454,6 +475,7 @@ pub struct AsyncBinaryReader {
     compressed: bool,
     remove_file: RemoveFileMode,
     prefetch: Option<usize>,
+    chunks_list: Option<Vec<usize>>,
 }
 
 impl AsyncBinaryReader {
@@ -462,19 +484,18 @@ impl AsyncBinaryReader {
         compressed: bool,
         remove_file: RemoveFileMode,
         prefetch: Option<usize>,
+        chunks_list: Option<Vec<usize>>,
     ) -> OpenedFile {
         if compressed {
-            OpenedFile::Compressed(Arc::new(CompressedBinaryReader::new(
-                path,
-                remove_file,
-                None,
-            )))
+            OpenedFile::Compressed {
+                reader: Arc::new(CompressedBinaryReader::new(path, remove_file, None)),
+                chunks_list,
+            }
         } else {
-            OpenedFile::Plain(Arc::new(LockFreeBinaryReader::new(
-                path,
-                remove_file,
-                prefetch,
-            )))
+            OpenedFile::Plain {
+                reader: Arc::new(LockFreeBinaryReader::new(path, remove_file, prefetch)),
+                chunks_list,
+            }
         }
     }
 
@@ -483,6 +504,7 @@ impl AsyncBinaryReader {
         compressed: bool,
         remove_file: RemoveFileMode,
         prefetch: Option<usize>,
+        chunks_list: Option<Vec<usize>>,
     ) -> Self {
         Self {
             path: path.clone(),
@@ -490,6 +512,7 @@ impl AsyncBinaryReader {
             compressed,
             remove_file,
             prefetch,
+            chunks_list,
         }
     }
 
@@ -498,7 +521,13 @@ impl AsyncBinaryReader {
         let opened_file = &self.opened_file.read();
         let file = match opened_file.deref() {
             OpenedFile::NotOpened | OpenedFile::Finished => {
-                tmp_file = Self::open_file(&self.path, self.compressed, RemoveFileMode::Keep, None);
+                tmp_file = Self::open_file(
+                    &self.path,
+                    self.compressed,
+                    RemoveFileMode::Keep,
+                    None,
+                    self.chunks_list.clone(),
+                );
                 &tmp_file
             }
             file => file,
@@ -508,8 +537,8 @@ impl AsyncBinaryReader {
 
     pub fn get_data_format_info<T: Decode<()>>(&self) -> Option<T> {
         self.with_opened_file(|file| match file {
-            OpenedFile::Plain(file) => Some(file.get_data_format_info()),
-            OpenedFile::Compressed(file) => Some(file.get_data_format_info()),
+            OpenedFile::Plain { reader, .. } => Some(reader.get_data_format_info()),
+            OpenedFile::Compressed { reader, .. } => Some(reader.get_data_format_info()),
             OpenedFile::NotOpened | OpenedFile::Finished => None,
         })
     }
@@ -520,8 +549,8 @@ impl AsyncBinaryReader {
 
     pub fn get_file_size(&self) -> usize {
         self.with_opened_file(|file| match file {
-            OpenedFile::Plain(file) => file.get_length(),
-            OpenedFile::Compressed(file) => file.get_length(),
+            OpenedFile::Plain { reader, .. } => reader.get_length(),
+            OpenedFile::Compressed { reader, .. } => reader.get_length(),
             OpenedFile::NotOpened | OpenedFile::Finished => 0,
         })
     }
@@ -539,14 +568,20 @@ impl AsyncBinaryReader {
         extra_buffer: S::ExtraDataBuffer,
         allowed_strategy: AllowedCheckpointStrategy<S::CheckpointData>,
         deserializer_init_data: S::InitData,
+        chunks_list: Option<Vec<usize>>,
     ) -> AsyncBinaryReaderItemsIterator<S> {
         let mut opened_file = self.opened_file.read();
         if matches!(*opened_file, OpenedFile::NotOpened) {
             drop(opened_file);
             let mut writable = self.opened_file.write();
             if matches!(*writable, OpenedFile::NotOpened) {
-                *writable =
-                    Self::open_file(&self.path, self.compressed, self.remove_file, self.prefetch);
+                *writable = Self::open_file(
+                    &self.path,
+                    self.compressed,
+                    self.remove_file,
+                    self.prefetch,
+                    chunks_list,
+                );
             }
             opened_file = RwLockWriteGuard::downgrade(writable);
         }
@@ -598,6 +633,14 @@ impl<S: BucketItemSerializer> AsyncBinaryReaderItemsIterator<S> {
                 checkpoint_data,
             },
         })
+    }
+
+    pub fn sanity_check(&self) -> Result<(), String> {
+        if !self.stream.checkpoint_finished {
+            Err("Checkpoint error!".to_string())
+        } else {
+            Ok(())
+        }
     }
 }
 

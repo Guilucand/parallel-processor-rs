@@ -16,7 +16,7 @@ use crate::execution_manager::scheduler::{
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Barrier, Weak};
 use std::thread::JoinHandle;
 
 pub struct ExecThreadPool<E: AsyncExecutor> {
@@ -77,6 +77,29 @@ impl<E: AsyncExecutor> ExecutorsHandle<E> {
                 packets_queue: Arc::new(channel),
             },
             high_priority,
+            None,
+        );
+
+        AddressProducer {
+            packets_queue: sender,
+        }
+    }
+
+    pub fn create_new_address_with_limit(
+        &self,
+        data: Arc<E::InitData>,
+        high_priority: bool,
+        max_in_queue: usize,
+    ) -> AddressProducer<E::InputPacket> {
+        let channel = self.channels_pool.alloc_object();
+        let sender = channel.make_sender();
+        self.spawner.send_with_priority(
+            AddressConsumer {
+                init_data: data,
+                packets_queue: Arc::new(channel),
+            },
+            high_priority,
+            Some(max_in_queue),
         );
 
         AddressProducer {
@@ -171,11 +194,14 @@ impl<E: AsyncExecutor> ExecThreadPool<E> {
             threads_count: self.threads_count,
         };
 
+        let barrier = Arc::new(Barrier::new(self.threads_count));
+
         for i in 0..self.threads_count {
             let global_params = global_params.clone();
             let addresses_receiver = addresses_receiver.clone();
             let scheduler = scheduler.clone();
             let scoped_thread_pool = scoped_thread_pool.clone();
+            let barrier = barrier.clone();
 
             let thread = std::thread::Builder::new()
                 .name(format!("{}-{}", self.name, i))
@@ -188,6 +214,7 @@ impl<E: AsyncExecutor> ExecThreadPool<E> {
                         ExecutorReceiver {
                             addresses_receiver,
                             thread_pool: scoped_thread_pool,
+                            barrier,
                         },
                     );
                 })

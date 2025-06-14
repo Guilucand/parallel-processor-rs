@@ -172,7 +172,11 @@ impl LockFreeBucket for CompressedBinaryWriter {
         inner.create_new_block(passtrough_range);
     }
 
-    fn write_data(&self, bytes: &[u8]) {
+    fn get_bucket_size(&self) -> u64 {
+        self.inner.lock().writer.writer().len()
+    }
+
+    fn write_data(&self, bytes: &[u8]) -> u64 {
         let stat_raii = AtomicCounterGuardSum::new(&THREADS_BUSY_WRITING, 1);
         //
         let mut inner = self.inner.lock();
@@ -184,6 +188,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
         }
 
         drop(stat_raii);
+        inner.writer.writer().len()
     }
 
     fn get_path(&self) -> PathBuf {
