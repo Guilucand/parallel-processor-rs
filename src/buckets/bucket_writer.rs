@@ -8,8 +8,8 @@ use bincode::{Decode, Encode};
 pub trait BucketItemSerializer {
     type InputElementType<'a>: ?Sized;
     type ExtraData;
-    type ReadBuffer;
-    type ExtraDataBuffer;
+    type ReadBuffer: Default;
+    type ExtraDataBuffer: Default;
     type ReadType<'a>;
     type InitData;
 
@@ -37,12 +37,21 @@ pub trait BucketItemSerializer {
     fn get_size(&self, element: &Self::InputElementType<'_>, extra: &Self::ExtraData) -> usize;
 }
 
+#[repr(transparent)]
+pub struct BytesArrayBuffer<const SIZE: usize>([u8; SIZE]);
+
+impl<const SIZE: usize> Default for BytesArrayBuffer<SIZE> {
+    fn default() -> Self {
+        Self([0; SIZE])
+    }
+}
+
 pub struct BytesArraySerializer<const SIZE: usize>(PhantomData<[(); SIZE]>);
 impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
     type InputElementType<'a> = [u8; SIZE];
     type ExtraData = ();
     type ExtraDataBuffer = ();
-    type ReadBuffer = [u8; SIZE];
+    type ReadBuffer = BytesArrayBuffer<SIZE>;
     type ReadType<'a> = &'a [u8; SIZE];
     type InitData = ();
 
@@ -73,8 +82,8 @@ impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
         read_buffer: &'a mut Self::ReadBuffer,
         _: &mut Self::ExtraDataBuffer,
     ) -> Option<Self::ReadType<'a>> {
-        stream.read_exact(read_buffer).ok()?;
-        Some(read_buffer)
+        stream.read_exact(&mut read_buffer.0).ok()?;
+        Some(&read_buffer.0)
     }
 
     #[inline(always)]

@@ -54,6 +54,7 @@ pub struct FileReader {
     chunks_count: usize,
     current_ptr: *const u8,
     current_len: usize,
+    current_file_position: usize,
     prefetch_amount: Option<usize>,
 }
 
@@ -73,6 +74,7 @@ impl Clone for FileReader {
             chunks_count: self.chunks_count,
             current_ptr: self.current_ptr,
             current_len: self.current_len,
+            current_file_position: self.current_file_position,
             prefetch_amount: self.prefetch_amount,
         }
     }
@@ -112,6 +114,7 @@ impl FileReader {
             chunks_count,
             current_ptr: std::ptr::null(),
             current_len: 0,
+            current_file_position: 0,
             prefetch_amount,
         };
 
@@ -120,6 +123,10 @@ impl FileReader {
         }
 
         Some(reader)
+    }
+
+    pub fn get_unique_file_id(&self) -> usize {
+        self.file.data_ptr() as usize
     }
 
     pub fn total_file_size(&self) -> usize {
@@ -186,6 +193,7 @@ impl Read for FileReader {
                 );
                 self.current_ptr = self.current_ptr.add(copyable_bytes);
                 self.current_len -= copyable_bytes;
+                self.current_file_position += copyable_bytes;
                 bytes_written += copyable_bytes;
             }
         }
@@ -237,12 +245,37 @@ impl Seek for FileReader {
                 self.current_chunk_index = chunk_idx;
                 drop(file);
                 self.set_chunk_info(chunk_idx);
-                unsafe {
-                    self.current_ptr = self.current_ptr.add(offset as usize);
-                    self.current_len -= offset as usize;
-                }
+
+                self.current_ptr = unsafe { self.current_ptr.add(offset as usize) };
+                self.current_len -= offset as usize;
+                self.current_file_position = offset as usize;
 
                 return Ok(offset);
+            }
+            SeekFrom::Current(offset) => {
+                assert!(offset >= 0); // < 0  not supported yet
+                let mut offset = offset as usize;
+                loop {
+                    let clen_offset = offset.min(self.current_len);
+                    offset -= clen_offset;
+                    self.current_len -= clen_offset;
+                    self.current_ptr = unsafe { self.current_ptr.add(clen_offset) };
+                    self.current_file_position += clen_offset;
+
+                    if offset == 0 {
+                        break Ok(self.current_file_position as u64);
+                    }
+
+                    if self.current_chunk_index >= self.chunks_count - 1 {
+                        break Err(std::io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            "Unexpected eof",
+                        ));
+                    }
+
+                    self.current_chunk_index += 1;
+                    self.set_chunk_info(self.current_chunk_index);
+                }
             }
             _ => {
                 unimplemented!()

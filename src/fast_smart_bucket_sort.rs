@@ -26,6 +26,12 @@ impl<const LEN: usize> SortedData<LEN> {
     }
 }
 
+impl<const LEN: usize> Default for SortedData<LEN> {
+    fn default() -> Self {
+        Self { data: [0; LEN] }
+    }
+}
+
 pub struct SortedDataSerializer<const LEN: usize>;
 impl<const LEN: usize> BucketItemSerializer for SortedDataSerializer<LEN> {
     type InputElementType<'a> = SortedData<LEN>;

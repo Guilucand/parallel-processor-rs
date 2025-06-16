@@ -1,4 +1,4 @@
-use crate::buckets::readers::generic_binary_reader::{ChunkDecoder, GenericChunkedBinaryReader};
+use crate::buckets::readers::binary_reader::ChunkDecoder;
 use crate::buckets::writers::lock_free_binary_writer::LOCK_FREE_BUCKET_MAGIC;
 use crate::memory_fs::file::reader::FileReader;
 use std::io::{Read, Take};
@@ -17,5 +17,3 @@ impl ChunkDecoder for LockFreeStreamDecoder {
         stream.into_inner()
     }
 }
-
-pub type LockFreeBinaryReader = GenericChunkedBinaryReader<LockFreeStreamDecoder>;

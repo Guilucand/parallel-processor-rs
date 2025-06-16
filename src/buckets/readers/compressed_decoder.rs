@@ -1,4 +1,4 @@
-use crate::buckets::readers::generic_binary_reader::{ChunkDecoder, GenericChunkedBinaryReader};
+use crate::buckets::readers::binary_reader::ChunkDecoder;
 use crate::buckets::writers::compressed_binary_writer::COMPRESSED_BUCKET_MAGIC;
 use crate::memory_fs::file::reader::FileReader;
 use crate::utils::vec_reader::VecReader;
@@ -21,5 +21,3 @@ impl ChunkDecoder for CompressedStreamDecoder {
         file
     }
 }
-
-pub type CompressedBinaryReader = GenericChunkedBinaryReader<CompressedStreamDecoder>;
