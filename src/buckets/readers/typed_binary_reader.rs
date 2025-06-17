@@ -192,9 +192,19 @@ impl TypedStreamReader {
         chunk: BinaryReaderChunk,
         mut items_callback: impl FnMut(S::ReadType<'_>, &mut S::ExtraDataBuffer),
     ) {
-        let mut reader = BinaryChunkReader::<CompressedStreamDecoder>::new(chunk);
-        while let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
-            items_callback(item, extra_buffer)
+        match chunk.decoder_type {
+            DecoderType::LockFree => {
+                let mut reader = BinaryChunkReader::<LockFreeStreamDecoder>::new(chunk);
+                while let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
+                    items_callback(item, extra_buffer)
+                }
+            }
+            DecoderType::Compressed => {
+                let mut reader = BinaryChunkReader::<CompressedStreamDecoder>::new(chunk);
+                while let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
+                    items_callback(item, extra_buffer)
+                }
+            }
         }
     }
 
