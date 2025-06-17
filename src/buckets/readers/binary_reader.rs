@@ -47,6 +47,7 @@ impl Debug for BinaryReaderChunk {
             .field("length", &self.length)
             .field("extra_data", &self.extra_data)
             .field("decoder_type", &self.decoder_type)
+            .field("file_name", &self.reader.get_file_path().display())
             .finish()
     }
 }
@@ -66,6 +67,10 @@ impl BinaryReaderChunk {
 
     pub fn get_unique_file_id(&self) -> usize {
         self.reader.get_unique_file_id()
+    }
+
+    pub fn get_length(&self) -> u64 {
+        self.length
     }
 }
 

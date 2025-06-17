@@ -11,7 +11,7 @@ pub trait AsyncExecutor: Sized + Send + Sync + 'static {
     type InputPacket: PoolObjectTrait;
     type OutputPacket: PacketTrait;
     type GlobalParams: Send + Sync + 'static;
-    type InitData: Send + Sync + Clone + 'static;
+    type InitData: Send + Sync + 'static;
     const ALLOW_PARALLEL_ADDRESS_EXECUTION: bool;
 
     fn new() -> Self;

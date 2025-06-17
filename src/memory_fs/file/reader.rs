@@ -133,6 +133,10 @@ impl FileReader {
         self.file.read().len()
     }
 
+    pub fn get_file_path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn close_and_remove(self, remove_fs: bool) -> bool {
         MemoryFileInternal::delete(self.path, remove_fs)
     }
