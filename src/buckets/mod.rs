@@ -72,7 +72,7 @@ pub trait LockFreeBucket: Sized {
     fn finalize(self);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone)]
 pub struct MultiChunkBucket {
     pub index: usize,
     pub chunks: Vec<PathBuf>,
@@ -90,6 +90,7 @@ impl MultiChunkBucket {
     }
 }
 
+#[derive(Encode, Decode)]
 pub struct SingleBucket {
     pub index: usize,
     pub path: PathBuf,

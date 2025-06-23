@@ -89,7 +89,10 @@ impl MemoryFs {
         MemoryFileInternal::delete_directory(dir, remove_fs)
     }
 
-    pub fn flush_all_to_disk() {
+    pub fn flush_to_disk(flush_all: bool) {
+        if flush_all {
+            MemoryFileInternal::flush_all_to_disk();
+        }
         GlobalFlush::flush_to_disk();
     }
 

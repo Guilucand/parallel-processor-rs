@@ -324,7 +324,7 @@ impl ChunksAllocator {
     }
 
     pub fn giveback_all_memory(&self) {
-        MemoryFs::flush_all_to_disk();
+        MemoryFs::flush_to_disk(false);
 
         loop {
             {

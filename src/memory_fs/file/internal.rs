@@ -249,6 +249,14 @@ impl MemoryFileInternal {
         MEMORY_MAPPED_FILES.len()
     }
 
+    pub fn flush_all_to_disk() {
+        for file in MEMORY_MAPPED_FILES.iter() {
+            let mut file = file.write();
+            file.change_to_disk_only();
+            file.flush_chunks(usize::MAX);
+        }
+    }
+
     pub fn delete(path: impl AsRef<Path>, remove_fs: bool) -> bool {
         if let Some(file) = MEMORY_MAPPED_FILES.remove(path.as_ref()) {
             stats::decrease_files_usage(file.1.read().len() as u64);

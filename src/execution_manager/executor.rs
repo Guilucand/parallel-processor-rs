@@ -107,3 +107,10 @@ impl<E: AsyncExecutor> ExecutorAddressOperations<E> {
         }
     }
 }
+
+impl<E: AsyncExecutor> Drop for ExecutorAddressOperations<E> {
+    fn drop(&mut self) {
+        // Wait for the senders to terminate while ensuring that no more packets are waiting
+        assert!(self.address_data.packets_queue.recv().is_none());
+    }
+}
