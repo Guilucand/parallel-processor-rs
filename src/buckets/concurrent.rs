@@ -51,6 +51,11 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
         }
     }
 
+    #[inline(always)]
+    pub fn get_buckets_count(&self) -> &BucketsCount {
+        self.mtb.get_buckets_count()
+    }
+
     #[inline]
     pub fn add_element_extended(
         &mut self,
