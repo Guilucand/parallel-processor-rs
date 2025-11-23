@@ -1,11 +1,12 @@
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::{MemoryFs, FILES_FLUSH_HASH_MAP};
+use crate::simple_process_stats::ProcessStats;
 use parking_lot::lock_api::RawMutex as _;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::alloc::{alloc, dealloc, Layout};
 use std::cmp::{max, min};
 use std::slice::{from_raw_parts, from_raw_parts_mut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 const ALLOCATOR_ALIGN: usize = 4096;
@@ -183,12 +184,19 @@ impl Drop for AllocatedChunk {
     }
 }
 
+pub struct MemoryAllocationLimits {
+    pub max_usage: MemoryDataSize,
+    pub min_fs_usage: MemoryDataSize,
+}
+
 pub struct ChunksAllocator {
     buffers_list: Mutex<Vec<(usize, usize)>>,
     chunks_wait_condvar: Condvar,
     chunks: Mutex<Vec<usize>>,
+    cleared_chunks: Mutex<Vec<usize>>,
     min_free_chunks: AtomicUsize,
     chunks_total_count: AtomicUsize,
+    is_active: AtomicBool,
     chunk_padded_size: AtomicUsize,
     chunk_usable_size: AtomicUsize,
     chunks_log_size: AtomicUsize,
@@ -206,8 +214,10 @@ impl ChunksAllocator {
             buffers_list: Mutex::new(vec![]),
             chunks_wait_condvar: Condvar::new(),
             chunks: Mutex::const_new(parking_lot::RawMutex::INIT, Vec::new()),
+            cleared_chunks: Mutex::const_new(parking_lot::RawMutex::INIT, Vec::new()),
             min_free_chunks: AtomicUsize::new(0),
             chunks_total_count: AtomicUsize::new(0),
+            is_active: AtomicBool::new(false),
             chunk_padded_size: AtomicUsize::new(0),
             chunk_usable_size: AtomicUsize::new(0),
             chunks_log_size: AtomicUsize::new(0),
@@ -251,11 +261,79 @@ impl ChunksAllocator {
     }
 
     pub fn initialize(
-        &self,
+        &'static self,
         memory: MemoryDataSize,
         mut chunks_log_size: usize,
         min_chunks_count: usize,
+        alloc_limits: Option<MemoryAllocationLimits>,
     ) {
+        self.is_active.swap(true, Ordering::Relaxed);
+
+        #[cfg(not(target_os = "windows"))]
+        if let Some(alloc_limits) = alloc_limits {
+            // Try to softly enforce the requested allocation limits
+            std::thread::spawn(move || {
+                let min_chunks_count = alloc_limits.min_fs_usage.as_bytes()
+                    / self.chunk_usable_size.load(Ordering::Relaxed);
+
+                while self.is_active.load(Ordering::Relaxed) {
+                    const MIN_FREE_CHUNKS_COUNT: usize = 4;
+
+                    if let Ok(stats) = ProcessStats::get() {
+                        if stats.memory_usage_bytes as usize > alloc_limits.max_usage.as_bytes() {
+                            MemoryFs::reduce_pressure();
+                            let mut chunks_to_free = vec![];
+                            {
+                                let cleared_chunks_count = self.cleared_chunks.lock().len();
+                                let mut chunks = self.chunks.lock();
+                                while chunks.len() > MIN_FREE_CHUNKS_COUNT
+                                    && ((stats.memory_usage_bytes as usize).saturating_sub(
+                                        chunks_to_free.len()
+                                            * self.chunk_padded_size.load(Ordering::Relaxed),
+                                    )) > alloc_limits.max_usage.as_bytes()
+                                    && min_chunks_count // Ensure that there is a minimum amount of chunks
+                                        + cleared_chunks_count
+                                        + chunks_to_free.len()
+                                        < self.chunks_total_count.load(Ordering::Relaxed)
+                                {
+                                    chunks_to_free.push(chunks.pop().unwrap());
+                                }
+                                drop(chunks);
+                            }
+                            let mut cleared_chunks = self.cleared_chunks.lock();
+                            for chunk_start in chunks_to_free {
+                                unsafe {
+                                    libc::madvise(
+                                        chunk_start as *mut libc::c_void,
+                                        self.chunk_padded_size.load(Ordering::Relaxed),
+                                        libc::MADV_DONTNEED,
+                                    );
+                                }
+                                cleared_chunks.push(chunk_start);
+                            }
+                        } else {
+                            let allowed_space = alloc_limits.max_usage.as_bytes()
+                                - stats.memory_usage_bytes as usize;
+                            let allowed_chunks =
+                                allowed_space / self.chunk_padded_size.load(Ordering::Relaxed);
+                            if allowed_chunks > 0 {
+                                let mut cleared_chunks = self.cleared_chunks.lock();
+                                let mut chunks = self.chunks.lock();
+                                while chunks.len() < allowed_chunks && cleared_chunks.len() > 0 {
+                                    chunks.push(cleared_chunks.pop().unwrap());
+                                }
+                            }
+                        }
+                    }
+
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                // Restore all the cleared chunks on termination
+                let cleared_chunks = self.cleared_chunks.lock().drain(..).collect::<Vec<_>>();
+                self.chunks.lock().extend(cleared_chunks);
+            });
+        }
+
         if self.buffers_list.lock().len() > 0 {
             // Already allocated
             return;
@@ -472,6 +550,7 @@ impl ChunksAllocator {
     }
 
     pub fn deinitialize(&self) {
+        self.is_active.store(false, Ordering::Relaxed);
         let mut chunks = self.chunks.lock();
 
         let mut counter = 0;

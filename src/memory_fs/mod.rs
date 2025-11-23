@@ -10,7 +10,7 @@ use crate::memory_fs::file::flush::*;
 use parking_lot::Mutex;
 
 use crate::memory_data_size::MemoryDataSize;
-use crate::memory_fs::allocator::CHUNKS_ALLOCATOR;
+use crate::memory_fs::allocator::{MemoryAllocationLimits, CHUNKS_ALLOCATOR};
 use crate::memory_fs::file::internal::{MemoryFileInternal, SWAPPABLE_FILES};
 
 pub const O_DIRECT: i32 = 0x4000;
@@ -38,6 +38,7 @@ impl MemoryFs {
         flush_queue_size: usize,
         threads_count: usize,
         min_chunks_count: usize,
+        alloc_limits: Option<MemoryAllocationLimits>,
     ) {
         let chunk_size = (memory_size / (min_chunks_count as f64)).as_bytes();
 
@@ -47,7 +48,12 @@ impl MemoryFs {
             suggested_chunk_size_log += 1;
         }
 
-        CHUNKS_ALLOCATOR.initialize(memory_size, suggested_chunk_size_log, min_chunks_count);
+        CHUNKS_ALLOCATOR.initialize(
+            memory_size,
+            suggested_chunk_size_log,
+            min_chunks_count,
+            alloc_limits,
+        );
         *FILES_FLUSH_HASH_MAP.lock() = Some(FxHashMap::with_capacity_and_hasher(
             8192,
             Default::default(),
