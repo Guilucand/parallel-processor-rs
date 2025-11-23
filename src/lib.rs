@@ -21,6 +21,7 @@ pub mod utils;
 
 pub use logging::{set_logger_function, LogLevel};
 
+#[cfg(target_os = "linux")]
 pub mod simple_process_stats;
 
 pub struct Utils {}

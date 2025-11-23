@@ -1,6 +1,5 @@
 use crate::memory_data_size::MemoryDataSize;
 use crate::memory_fs::{MemoryFs, FILES_FLUSH_HASH_MAP};
-use crate::simple_process_stats::ProcessStats;
 use parking_lot::lock_api::RawMutex as _;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::alloc::{alloc, dealloc, Layout};
@@ -269,8 +268,10 @@ impl ChunksAllocator {
     ) {
         self.is_active.swap(true, Ordering::Relaxed);
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
         if let Some(alloc_limits) = alloc_limits {
+            use crate::simple_process_stats::ProcessStats;
+
             // Try to softly enforce the requested allocation limits
             std::thread::spawn(move || {
                 let min_chunks_count = alloc_limits.min_fs_usage.as_bytes()
