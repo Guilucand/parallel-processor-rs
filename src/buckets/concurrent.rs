@@ -40,7 +40,7 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
     where
         S::InitData: Copy,
     {
-        assert_eq!(mtb.active_buckets.len(), thread_data.buffers.len());
+        assert!(mtb.active_buckets.len() <= thread_data.buffers.len());
         Self {
             mtb: mtb.clone(),
             thread_data,
@@ -96,7 +96,13 @@ impl<B: LockFreeBucket, S: BucketItemSerializer> BucketsThreadDispatcher<B, S> {
     }
 
     pub fn finalize(mut self) -> (BucketsThreadBuffer, Arc<MultiThreadBuckets<B>>) {
-        for (index, vec) in self.thread_data.buffers.iter_mut().enumerate() {
+        for (index, vec) in self
+            .thread_data
+            .buffers
+            .iter_mut()
+            .enumerate()
+            .take(self.mtb.active_buckets.len())
+        {
             if vec.len() == 0 {
                 continue;
             }

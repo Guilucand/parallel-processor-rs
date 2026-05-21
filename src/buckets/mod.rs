@@ -275,6 +275,30 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
         self.active_buckets[bucket as usize].load().get_path()
     }
 
+    fn take_active_bucket(&self, index: u16, next_progressive: usize) -> PathBuf {
+        let mut taken_bucket =
+            self.active_buckets[index as usize].swap(Arc::new(B::new_serialized_data_format(
+                &self.base_path.as_deref().unwrap(),
+                &self.init_data.as_ref().unwrap(),
+                next_progressive,
+                &self.serialized_format_info,
+            )));
+
+        let taken_bucket = loop {
+            // Wait for the bucket to end all the pending writes before finalizing it
+            match Arc::try_unwrap(taken_bucket) {
+                Ok(bucket) => break bucket,
+                Err(waiting_arc) => {
+                    taken_bucket = waiting_arc;
+                    std::hint::spin_loop();
+                }
+            }
+        };
+        let path = taken_bucket.get_path();
+        taken_bucket.finalize();
+        path
+    }
+
     pub fn add_data(&self, index: u16, data: &[u8]) -> ChunkingStatus {
         let bucket_guard = self.active_buckets[index as usize].load();
         let last_bucket_size = bucket_guard.write_data(data);
@@ -294,29 +318,10 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
                 }
 
                 // Take the largest bucket and add it to the stored buckets
-                let mut stored_bucket = self.active_buckets[index as usize].swap(Arc::new(
-                    B::new_serialized_data_format(
-                        &self.base_path.as_deref().unwrap(),
-                        &self.init_data.as_ref().unwrap(),
-                        *buckets_count,
-                        &self.serialized_format_info,
-                    ),
-                ));
 
-                let stored_bucket = loop {
-                    // Wait for the bucket to end all the pending writes before finalizing it
-                    match Arc::try_unwrap(stored_bucket) {
-                        Ok(bucket) => break bucket,
-                        Err(waiting_arc) => {
-                            stored_bucket = waiting_arc;
-                            std::hint::spin_loop();
-                        }
-                    }
-                };
+                let bucket_path = self.take_active_bucket(index, *buckets_count);
 
                 // Add the bucket to the stored buckets and clear its active usage
-                let bucket_path = stored_bucket.get_path();
-                stored_bucket.finalize();
                 self.stored_buckets[index as usize]
                     .lock()
                     .chunks
@@ -329,6 +334,25 @@ impl<B: LockFreeBucket> MultiThreadBuckets<B> {
             }
         } else {
             ChunkingStatus::SameChunk
+        }
+    }
+
+    pub fn take_bucket(self: &Arc<Self>, index: u16) -> MultiChunkBucket {
+        let mut files = vec![];
+
+        let mut buckets_count = self.bucket_count_lock.lock();
+
+        let active_bucket = self.take_active_bucket(index, *buckets_count);
+        *buckets_count += 1;
+        drop(buckets_count);
+
+        files.push(active_bucket);
+        let mut stored_buckets = self.stored_buckets[index as usize].lock();
+        files.extend(stored_buckets.chunks.drain(..));
+        MultiChunkBucket {
+            index: index as usize,
+            chunks: files,
+            extra_bucket_data: stored_buckets.extra_bucket_data,
         }
     }
 
