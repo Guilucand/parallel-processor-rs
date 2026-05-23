@@ -145,7 +145,6 @@ impl PhaseTimesMonitor {
                     );
 
                     let mut current_stats = CURRENT_STATS.lock();
-                    current_stats.reset();
                     current_stats.update(
                         elapsed,
                         user_elapsed_usage,
@@ -225,13 +224,15 @@ impl PhaseTimesMonitor {
                 .unwrap()
                 .memory_usage_bytes;
 
-            format!(
+            let stats = format!(
                 " GL:{} PH:{} CT: {} CM: {:.2}",
                 GLOBAL_STATS.lock().format(),
                 PHASE_STATS.lock().format(),
                 CURRENT_STATS.lock().format(),
                 MemoryDataSize::from_bytes(memory as usize),
-            )
+            );
+            CURRENT_STATS.lock().reset();
+            stats
         }
         #[cfg(not(feature = "process-stats"))]
         String::new()

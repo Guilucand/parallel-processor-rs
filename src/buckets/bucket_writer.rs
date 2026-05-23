@@ -15,6 +15,8 @@ pub trait BucketItemSerializer {
 
     type CheckpointData: Encode + Decode<()> + 'static;
 
+    fn clear_buffer(buffer: &mut Self::ReadBuffer);
+
     /// Creates a new instance
     fn new(init_data: Self::InitData) -> Self;
     /// Reset on non continuous data
@@ -56,6 +58,8 @@ impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
     type InitData = ();
 
     type CheckpointData = ();
+
+    fn clear_buffer(_buffer: &mut Self::ReadBuffer) {}
 
     #[inline(always)]
     fn new(_: ()) -> Self {
@@ -102,6 +106,8 @@ impl BucketItemSerializer for BytesSliceSerializer {
     type InitData = ();
 
     type CheckpointData = ();
+
+    fn clear_buffer(_buffer: &mut Self::ReadBuffer) {}
 
     #[inline(always)]
     fn new(_: ()) -> Self {

@@ -8,6 +8,7 @@ use parking_lot::{RwLock, RwLockWriteGuard};
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::slice::from_raw_parts_mut;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -86,6 +87,65 @@ impl FileWriter {
                 );
                 Ok(())
             }
+        }
+    }
+
+    pub fn write_all_unsync_from_readfn(
+        &self,
+        mut read_fn: impl FnMut(&mut [u8]) -> usize,
+        length: usize,
+    ) -> u64 {
+        // Update stats
+        stats::add_files_usage(length as u64);
+
+        let buffer = self.current_buffer.read();
+
+        unsafe {
+            let remaining_slice = from_raw_parts_mut(
+                buffer.get_mut_ptr().add(buffer.len()),
+                buffer.max_len() - buffer.len(),
+            );
+            if remaining_slice.len() >= length {
+                let amount_read = read_fn(&mut remaining_slice[..length]);
+                buffer.set_len(self.len() as usize + amount_read);
+                self.file_length.load(Ordering::Relaxed) + buffer.len() as u64
+            } else {
+                drop(buffer);
+                let mut buffer = self.current_buffer.write();
+                let mut temp_vec = Vec::new();
+
+                let position = self
+                    .file_length
+                    .fetch_add(buffer.len() as u64, Ordering::SeqCst)
+                    + (buffer.len() as u64);
+
+                replace_with::replace_with_or_abort(buffer.deref_mut(), |buffer| {
+                    let new_buffer = MemoryFileInternal::reserve_space(
+                        &self.file,
+                        buffer,
+                        &mut temp_vec,
+                        length,
+                        length,
+                    );
+                    new_buffer
+                });
+
+                // Add the completely filled chunks to the file, removing the last size as the current chunk is not counted yet in the file_length
+                self.file_length
+                    .fetch_add((length - buffer.len()) as u64, Ordering::SeqCst);
+
+                let _buffer_read = RwLockWriteGuard::downgrade(buffer);
+
+                for (_lock, part) in temp_vec.drain(..) {
+                    read_fn(part);
+                }
+
+                if self.file.read().is_on_disk() {
+                    self.file.write().flush_chunks(usize::MAX);
+                }
+                position
+            }
+            // let read_fn
         }
     }
 

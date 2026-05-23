@@ -3,7 +3,6 @@ use crate::memory_fs::file::flush::GlobalFlush;
 use crate::memory_fs::flushable_buffer::{FileFlushMode, FlushableItem};
 use crate::memory_fs::stats;
 use dashmap::DashMap;
-use filebuffer::FileBuffer;
 use once_cell::sync::Lazy;
 use parking_lot::lock_api::{ArcRwLockReadGuard, ArcRwLockWriteGuard};
 use parking_lot::{Mutex, RawRwLock, RwLock};
@@ -11,9 +10,11 @@ use replace_with::replace_with_or_abort;
 use rustc_hash::FxHashMap;
 use std::cmp::min;
 use std::collections::BinaryHeap;
-use std::fs::remove_file;
+use std::fs::{remove_file, File};
+use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::ptr::copy_nonoverlapping;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
@@ -106,6 +107,18 @@ pub enum OpenMode {
 //     }
 // }
 
+#[cfg(unix)]
+fn read_at_cross_platform(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    use std::os::unix::fs::FileExt;
+    file.read_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at_cross_platform(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    use std::os::windows::fs::FileExt;
+    file.seek_read(buf, offset)
+}
+
 pub enum FileChunk {
     OnDisk { offset: u64, len: usize },
     OnMemory { chunk: AllocatedChunk },
@@ -119,26 +132,46 @@ impl FileChunk {
         }
     }
 
-    #[inline(always)]
-    pub fn get_ptr(&self, file: &UnderlyingFile, prefetch: Option<usize>) -> *const u8 {
-        unsafe {
-            match self {
-                FileChunk::OnDisk { offset, .. } => {
-                    if let UnderlyingFile::ReadMode(file) = file {
-                        let file = file.as_ref().unwrap();
+    pub fn is_on_disk(&self) -> bool {
+        matches!(self, FileChunk::OnDisk { .. })
+    }
 
-                        if let Some(prefetch) = prefetch {
-                            let remaining_length = file.len() - *offset as usize;
-                            let prefetch_length = min(remaining_length, prefetch);
-                            file.prefetch(*offset as usize, prefetch_length);
-                        }
+    pub fn read_at(
+        &self,
+        file: &UnderlyingFile,
+        relative_position: u64,
+        buffer: &mut [u8],
+    ) -> io::Result<usize> {
+        match self {
+            FileChunk::OnDisk { offset, len } => {
+                if let UnderlyingFile::ReadMode(file) = file {
+                    let copyable_bytes = buffer
+                        .len()
+                        .min(len.saturating_sub(relative_position as usize));
 
-                        file.as_ptr().add(*offset as usize)
-                    } else {
-                        panic!("Error, wrong underlying file!");
-                    }
+                    let file = file.as_ref().unwrap();
+
+                    read_at_cross_platform(
+                        file,
+                        &mut buffer[..copyable_bytes],
+                        *offset + relative_position,
+                    )
+                } else {
+                    panic!("Error, wrong underlying file!");
                 }
-                FileChunk::OnMemory { chunk } => chunk.get_mut_ptr() as *const u8,
+            }
+            FileChunk::OnMemory { chunk } => {
+                let copyable_bytes = buffer
+                    .len()
+                    .min(chunk.len().saturating_sub(relative_position as usize));
+                unsafe {
+                    copy_nonoverlapping(
+                        chunk.get_mut_ptr().add(relative_position as usize),
+                        buffer.as_mut_ptr(),
+                        copyable_bytes,
+                    );
+                }
+                Ok(copyable_bytes)
             }
         }
     }
@@ -152,7 +185,7 @@ pub enum UnderlyingFile {
         file: Arc<Mutex<FileHandle>>,
         chunk_position: usize,
     },
-    ReadMode(Option<FileBuffer>),
+    ReadMode(Option<File>),
 }
 
 pub struct MemoryFileInternal {
@@ -338,7 +371,7 @@ impl MemoryFileInternal {
                             }
 
                             UnderlyingFile::ReadMode(
-                                FileBuffer::open(&self.path)
+                                File::open(&self.path)
                                     .inspect_err(|e| {
                                         error = Some(format!(
                                             "Error while opening file {}: {}",

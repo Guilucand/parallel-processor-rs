@@ -1,31 +1,67 @@
 use std::cmp::min;
-use std::io::Read;
+use std::io::{self, Read};
 
 pub struct VecReader<R: Read> {
+    reader: R,
+    inner: VecReaderInner,
+}
+
+#[derive(Clone)]
+pub struct VecReaderInner {
     vec: Vec<u8>,
     fill: usize,
     pos: usize,
-    reader: R,
     stream_ended: bool,
 }
 
 impl<R: Read> VecReader<R> {
     pub fn new(capacity: usize, reader: R) -> VecReader<R> {
+        VecReader {
+            reader,
+            inner: VecReaderInner::new(capacity),
+        }
+    }
+
+    #[inline]
+    pub fn read_bytes(&mut self, slice: &mut [u8]) -> usize {
+        self.inner.read_bytes(slice, |buf| self.reader.read(buf))
+    }
+
+    pub fn into_inner(self) -> R {
+        self.reader
+    }
+}
+
+impl VecReaderInner {
+    pub fn new(capacity: usize) -> VecReaderInner {
         let mut vec = Vec::with_capacity(capacity);
         unsafe {
             vec.set_len(capacity);
         }
-        VecReader {
+        VecReaderInner {
             vec,
             fill: 0,
             pos: 0,
-            reader,
             stream_ended: false,
         }
     }
 
-    fn update_buffer(&mut self) {
-        self.fill = match self.reader.read(&mut self.vec[..]) {
+    pub fn discard(&mut self, amount: usize) -> usize {
+        let fill_amount = self.fill - self.pos;
+        let discard_amount = fill_amount.min(amount);
+        self.pos += discard_amount;
+        amount - discard_amount
+    }
+
+    pub fn reset(&mut self) {
+        self.fill = 0;
+        self.pos = 0;
+        self.stream_ended = false;
+    }
+
+    #[inline]
+    fn update_buffer(&mut self, mut read_fn: impl FnMut(&mut [u8]) -> io::Result<usize>) {
+        self.fill = match read_fn(&mut self.vec[..]) {
             Ok(fill) => fill,
             Err(_) => 0,
         };
@@ -34,12 +70,16 @@ impl<R: Read> VecReader<R> {
     }
 
     #[inline]
-    pub fn read_bytes(&mut self, slice: &mut [u8]) -> usize {
+    pub fn read_bytes(
+        &mut self,
+        slice: &mut [u8],
+        mut read_fn: impl FnMut(&mut [u8]) -> io::Result<usize>,
+    ) -> usize {
         let mut offset = 0;
 
         while offset < slice.len() {
             if self.fill == self.pos {
-                self.update_buffer();
+                self.update_buffer(&mut read_fn);
 
                 if self.fill == self.pos {
                     return offset;
@@ -60,10 +100,6 @@ impl<R: Read> VecReader<R> {
             offset += amount;
         }
         offset
-    }
-
-    pub fn into_inner(self) -> R {
-        self.reader
     }
 }
 

@@ -116,9 +116,8 @@ impl ChunkedBinaryReaderIndex {
     pub fn from_file(
         name: impl AsRef<Path>,
         remove_file: RemoveFileMode,
-        prefetch_amount: Option<usize>,
     ) -> Self {
-        let mut file = FileReader::open(&name, prefetch_amount)
+        let mut file = FileReader::open(&name)
             .unwrap_or_else(|| panic!("Cannot open file {}", name.as_ref().display()));
 
         let mut header_buffer = [0; BucketHeader::SIZE];

@@ -43,6 +43,8 @@ impl<const LEN: usize> BucketItemSerializer for SortedDataSerializer<LEN> {
 
     type CheckpointData = ();
 
+    fn clear_buffer(_buffer: &mut Self::ReadBuffer) {}
+
     #[inline(always)]
     fn new(_: ()) -> Self {
         Self

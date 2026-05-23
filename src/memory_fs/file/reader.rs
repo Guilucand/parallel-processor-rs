@@ -1,15 +1,17 @@
 use crate::memory_fs::file::internal::{FileChunk, MemoryFileInternal, OpenMode};
+use crate::utils::vec_reader::VecReaderInner;
 use parking_lot::lock_api::ArcRwLockReadGuard;
 use parking_lot::{RawRwLock, RwLock};
-use std::cmp::min;
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::slice::from_raw_parts;
 use std::sync::Arc;
 
 use super::writer::FileWriter;
+
+const MIN_UNBUFFERED_READ: usize = 2048;
+const FILE_READ_BUFFER_SIZE: usize = 4096;
 
 #[derive(Clone)]
 pub struct FileRangeReference {
@@ -27,22 +29,26 @@ impl FileRangeReference {
         let mut written_bytes = 0;
 
         while written_bytes < self.bytes_count {
+            let underlying_file = file.get_underlying_file();
             let chunk = file.get_chunk(chunk_index);
             let chunk = chunk.read();
             let to_copy = (chunk.get_length() - chunk_offset).min(self.bytes_count - written_bytes);
 
-            let data = chunk
-                .get_ptr(&file.get_underlying_file(), None)
-                .add(chunk_offset);
-
-            other.write_all_parallel(from_raw_parts(data, to_copy), to_copy);
+            other.write_all_unsync_from_readfn(
+                |buffer| {
+                    let amount = chunk
+                        .read_at(underlying_file, chunk_offset as u64, buffer)
+                        .unwrap();
+                    chunk_offset += amount;
+                    amount
+                },
+                to_copy,
+            );
 
             written_bytes += to_copy;
             chunk_index += 1;
             chunk_offset = 0;
         }
-
-        // other.write_all_parallel(data, el_size)
     }
 }
 
@@ -52,10 +58,12 @@ pub struct FileReader {
     current_chunk_ref: Option<ArcRwLockReadGuard<RawRwLock, FileChunk>>,
     current_chunk_index: usize,
     chunks_count: usize,
-    current_ptr: *const u8,
+    current_position: usize,
     current_len: usize,
     current_file_position: usize,
-    prefetch_amount: Option<usize>,
+    is_on_disk: bool,
+    buffer: Option<VecReaderInner>,
+    buffer_position: usize,
 }
 
 unsafe impl Sync for FileReader {}
@@ -72,10 +80,12 @@ impl Clone for FileReader {
                 .map(|c| ArcRwLockReadGuard::rwlock(&c).read_arc()),
             current_chunk_index: self.current_chunk_index,
             chunks_count: self.chunks_count,
-            current_ptr: self.current_ptr,
+            current_position: self.current_position,
             current_len: self.current_len,
             current_file_position: self.current_file_position,
-            prefetch_amount: self.prefetch_amount,
+            is_on_disk: self.is_on_disk,
+            buffer: self.buffer.clone(),
+            buffer_position: self.buffer_position,
         }
     }
 }
@@ -87,14 +97,20 @@ impl FileReader {
         let chunk = file.get_chunk(index);
         let chunk_guard = chunk.read_arc();
 
-        let underlying_file = file.get_underlying_file();
-
-        self.current_ptr = chunk_guard.get_ptr(&underlying_file, self.prefetch_amount);
+        self.current_position = 0;
+        self.buffer_position = 0;
         self.current_len = chunk_guard.get_length();
+        self.is_on_disk = chunk_guard.is_on_disk();
         self.current_chunk_ref = Some(chunk_guard);
+
+        if self.is_on_disk && self.buffer.is_none() {
+            self.buffer = Some(VecReaderInner::new(FILE_READ_BUFFER_SIZE))
+        }
+
+        self.buffer.as_mut().map(|b| b.reset());
     }
 
-    pub fn open(path: impl AsRef<Path>, prefetch_amount: Option<usize>) -> Option<Self> {
+    pub fn open(path: impl AsRef<Path>) -> Option<Self> {
         let file = match MemoryFileInternal::retrieve_reference(&path) {
             None => MemoryFileInternal::create_from_fs(&path)?,
             Some(x) => x,
@@ -112,10 +128,12 @@ impl FileReader {
             current_chunk_ref: None,
             current_chunk_index: 0,
             chunks_count,
-            current_ptr: std::ptr::null(),
+            current_position: 0,
             current_len: 0,
             current_file_position: 0,
-            prefetch_amount,
+            is_on_disk: false,
+            buffer: None,
+            buffer_position: 0,
         };
 
         if reader.chunks_count > 0 {
@@ -187,19 +205,39 @@ impl Read for FileReader {
                 self.set_chunk_info(self.current_chunk_index);
             }
 
-            let copyable_bytes = min(buf.len() - bytes_written, self.current_len);
+            let file = self.file.read();
+            let underlying_file = file.get_underlying_file();
 
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    self.current_ptr,
-                    buf.as_mut_ptr().add(bytes_written),
-                    copyable_bytes,
-                );
-                self.current_ptr = self.current_ptr.add(copyable_bytes);
-                self.current_len -= copyable_bytes;
-                self.current_file_position += copyable_bytes;
-                bytes_written += copyable_bytes;
-            }
+            let copyable_bytes = buf.len() - bytes_written;
+
+            let copyable_bytes = if self.is_on_disk && copyable_bytes < MIN_UNBUFFERED_READ {
+                let buffer = self.buffer.as_mut().unwrap();
+                let copyable_bytes = buffer.read_bytes(&mut buf[bytes_written..], |buffer| {
+                    let read_amount = self.current_chunk_ref.as_ref().unwrap().read_at(
+                        underlying_file,
+                        self.buffer_position as u64,
+                        buffer,
+                    )?;
+                    self.buffer_position += read_amount;
+                    Ok(read_amount)
+                });
+                copyable_bytes
+            } else {
+                let copyable_bytes = self.current_chunk_ref.as_ref().unwrap().read_at(
+                    underlying_file,
+                    self.current_position as u64,
+                    &mut buf[bytes_written..],
+                )?;
+                self.buffer
+                    .as_mut()
+                    .map(|b| self.buffer_position += b.discard(copyable_bytes));
+                copyable_bytes
+            };
+
+            self.current_position += copyable_bytes;
+            self.current_len -= copyable_bytes;
+            self.current_file_position += copyable_bytes;
+            bytes_written += copyable_bytes;
         }
 
         Ok(bytes_written)
@@ -250,7 +288,10 @@ impl Seek for FileReader {
                 drop(file);
                 self.set_chunk_info(chunk_idx);
 
-                self.current_ptr = unsafe { self.current_ptr.add(offset as usize) };
+                self.current_position += offset as usize;
+                self.buffer
+                    .as_mut()
+                    .map(|b| self.buffer_position += b.discard(offset as usize));
                 self.current_len -= offset as usize;
                 self.current_file_position = offset as usize;
 
@@ -263,7 +304,10 @@ impl Seek for FileReader {
                     let clen_offset = offset.min(self.current_len);
                     offset -= clen_offset;
                     self.current_len -= clen_offset;
-                    self.current_ptr = unsafe { self.current_ptr.add(clen_offset) };
+                    self.current_position += clen_offset;
+                    self.buffer
+                        .as_mut()
+                        .map(|b| self.buffer_position += b.discard(clen_offset as usize));
                     self.current_file_position += clen_offset;
 
                     if offset == 0 {

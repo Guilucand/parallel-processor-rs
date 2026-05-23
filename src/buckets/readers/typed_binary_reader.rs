@@ -190,19 +190,40 @@ impl TypedStreamReader {
         extra_buffer: &mut S::ExtraDataBuffer,
         deserializer: &mut S,
         chunk: BinaryReaderChunk,
-        mut items_callback: impl FnMut(S::ReadType<'_>, &mut S::ExtraDataBuffer),
+        mut items_callback: impl for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer),
+        clear_buffer: bool,
     ) {
         match chunk.decoder_type {
             DecoderType::LockFree => {
                 let mut reader = BinaryChunkReader::<LockFreeStreamDecoder>::new(chunk);
-                while let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
-                    items_callback(item, extra_buffer)
+                loop {
+                    if let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
+                        items_callback(item, extra_buffer);
+                    } else {
+                        break;
+                    }
+                    if clear_buffer {
+                        S::clear_buffer(buffer);
+                    }
+                }
+                if clear_buffer {
+                    S::clear_buffer(buffer);
                 }
             }
             DecoderType::Compressed => {
                 let mut reader = BinaryChunkReader::<CompressedStreamDecoder>::new(chunk);
-                while let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
-                    items_callback(item, extra_buffer)
+                loop {
+                    if let Some(item) = deserializer.read_from(&mut reader, buffer, extra_buffer) {
+                        items_callback(item, extra_buffer);
+                    } else {
+                        break;
+                    }
+                    if clear_buffer {
+                        S::clear_buffer(buffer);
+                    }
+                }
+                if clear_buffer {
+                    S::clear_buffer(buffer);
                 }
             }
         }
@@ -229,6 +250,7 @@ impl TypedStreamReader {
                         &mut deserializer,
                         chunk,
                         &mut items_callback,
+                        true,
                     );
                 }
                 DecoderType::Compressed => {
@@ -238,6 +260,7 @@ impl TypedStreamReader {
                         &mut deserializer,
                         chunk,
                         &mut items_callback,
+                        true,
                     );
                 }
             }
@@ -253,7 +276,7 @@ impl TypedStreamReader {
         reader_thread: Option<Arc<AsyncReaderThread>>,
         deserializer_init_data: S::InitData,
         chunks_list: Vec<BinaryReaderChunk>,
-        mut items_callback: impl FnMut(S::ReadType<'_>, &mut S::ExtraDataBuffer),
+        mut items_callback: impl for<'a> FnMut(S::ReadType<'a>, &mut S::ExtraDataBuffer),
     ) -> TypedStreamReaderBuffers<S> {
         let mut deserializer = S::new(deserializer_init_data);
         let mut buffer = S::ReadBuffer::default();
@@ -285,11 +308,17 @@ impl TypedStreamReader {
                 finished: false,
             };
 
-            while let Some(item) =
-                deserializer.read_from(&mut reader, &mut buffer, &mut extra_buffer)
-            {
-                items_callback(item, &mut extra_buffer)
+            loop {
+                if let Some(item) =
+                    deserializer.read_from(&mut reader, &mut buffer, &mut extra_buffer)
+                {
+                    items_callback(item, &mut extra_buffer);
+                } else {
+                    break;
+                }
+                S::clear_buffer(&mut buffer);
             }
+            S::clear_buffer(&mut buffer);
         } else {
             for chunk in chunks_list {
                 match chunk.decoder_type {
@@ -300,6 +329,7 @@ impl TypedStreamReader {
                             &mut deserializer,
                             chunk,
                             &mut items_callback,
+                            true,
                         );
                     }
                     DecoderType::Compressed => {
@@ -309,6 +339,7 @@ impl TypedStreamReader {
                             &mut deserializer,
                             chunk,
                             &mut items_callback,
+                            true,
                         );
                     }
                 }
