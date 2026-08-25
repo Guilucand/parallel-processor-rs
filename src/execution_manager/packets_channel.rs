@@ -167,7 +167,14 @@ pub mod bounded {
                                 value = Some(v);
                                 true
                             }
-                            None => self.senders_count.load(Ordering::Relaxed) == 0,
+                            None => {
+                                if self.senders_count.load(Ordering::Acquire) == 0 {
+                                    value = self.queue.pop();
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                         });
                 });
                 value
@@ -188,7 +195,7 @@ pub mod bounded {
 
         #[inline(always)]
         fn decr_senders_count(&self) {
-            let senders_count = self.senders_count.fetch_sub(1, Ordering::Relaxed);
+            let senders_count = self.senders_count.fetch_sub(1, Ordering::Release);
             if senders_count == 1 {
                 self.receivers_waiting.notify_all();
             }
@@ -196,7 +203,7 @@ pub mod bounded {
 
         #[inline(always)]
         fn get_senders_count(&self) -> usize {
-            self.senders_count.load(Ordering::Relaxed)
+            self.senders_count.load(Ordering::Acquire)
         }
     }
 
