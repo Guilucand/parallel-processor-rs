@@ -1,5 +1,5 @@
 use std::cmp::min;
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 
 pub struct VecReader<R: Read> {
     reader: R,
@@ -100,6 +100,25 @@ impl VecReaderInner {
             offset += amount;
         }
         offset
+    }
+}
+
+/// The buffer is already there for the `Read` path, so handing it out costs
+/// nothing and lets a caller look ahead without consuming: a varint decoder can
+/// then read a whole machine word at a time instead of a byte at a time.
+impl<R: Read> BufRead for VecReader<R> {
+    #[inline]
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        let Self { reader, inner } = self;
+        if inner.pos == inner.fill {
+            inner.update_buffer(|buf| reader.read(buf));
+        }
+        Ok(&inner.vec[inner.pos..inner.fill])
+    }
+
+    #[inline]
+    fn consume(&mut self, amount: usize) {
+        self.inner.pos = (self.inner.pos + amount).min(self.inner.fill);
     }
 }
 

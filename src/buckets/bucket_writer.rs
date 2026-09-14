@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Write},
+    io::{BufRead, Write},
     marker::PhantomData,
 };
 
@@ -29,7 +29,10 @@ pub trait BucketItemSerializer {
         extra_data: &Self::ExtraData,
         extra_read_buffer: &Self::ExtraDataBuffer,
     );
-    fn read_from<'a, S: Read>(
+    /// `stream` is buffered so that an implementation can look ahead of what it
+    /// consumes: a varint decoder can then take a machine word at a time out of
+    /// `fill_buf` instead of paying a call per byte.
+    fn read_from<'a, S: BufRead>(
         &mut self,
         stream: S,
         read_buffer: &'a mut Self::ReadBuffer,
@@ -80,7 +83,7 @@ impl<const SIZE: usize> BucketItemSerializer for BytesArraySerializer<SIZE> {
         bucket.write(element).unwrap();
     }
 
-    fn read_from<'a, S: Read>(
+    fn read_from<'a, S: BufRead>(
         &mut self,
         mut stream: S,
         read_buffer: &'a mut Self::ReadBuffer,
@@ -128,7 +131,7 @@ impl BucketItemSerializer for BytesSliceSerializer {
         bucket.write(element).unwrap();
     }
 
-    fn read_from<'a, S: Read>(
+    fn read_from<'a, S: BufRead>(
         &mut self,
         _stream: S,
         _read_buffer: &'a mut Self::ReadBuffer,

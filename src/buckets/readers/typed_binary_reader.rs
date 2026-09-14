@@ -1,6 +1,11 @@
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use parking_lot::Mutex;
-use std::{collections::VecDeque, io::Read, sync::Arc, thread::JoinHandle};
+use std::{
+    collections::VecDeque,
+    io::{BufRead, Read},
+    sync::Arc,
+    thread::JoinHandle,
+};
 
 use crate::{
     buckets::{
@@ -173,6 +178,33 @@ impl Read for AsyncStreamReader {
         }
 
         Ok(total_read)
+    }
+}
+
+/// Zero cost: the decompressed block is already held whole, so the look-ahead
+/// is a slice into it rather than another copy.
+impl BufRead for AsyncStreamReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        while self.position >= self.buffer.buffer.len() {
+            if self.finished {
+                return Ok(&[]);
+            }
+            match self.reader_thread.output_data.recv().unwrap() {
+                AsyncReaderBuffer::Decompressed { data } => {
+                    self.buffer = data;
+                    self.position = 0;
+                }
+                AsyncReaderBuffer::Closed => {
+                    self.finished = true;
+                    return Ok(&[]);
+                }
+            }
+        }
+        Ok(&self.buffer.buffer[self.position..])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.position = (self.position + amount).min(self.buffer.buffer.len());
     }
 }
 

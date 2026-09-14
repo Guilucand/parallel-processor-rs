@@ -10,13 +10,14 @@ use desse::DesseSized;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub trait ChunkDecoder {
     const MAGIC_HEADER: &'static [u8; 16];
-    type ReaderType: Read;
+    /// Buffered, so that a deserializer can look ahead of what it consumes.
+    type ReaderType: BufRead;
     fn decode_stream(reader: FileReader, size: u64) -> Self::ReaderType;
     fn dispose_stream(stream: Self::ReaderType) -> FileReader;
 }
@@ -209,5 +210,17 @@ impl<D: ChunkDecoder> Read for BinaryChunkReader<D> {
     #[inline(always)]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.reader.read(buf)
+    }
+}
+
+impl<D: ChunkDecoder> BufRead for BinaryChunkReader<D> {
+    #[inline(always)]
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.reader.fill_buf()
+    }
+
+    #[inline(always)]
+    fn consume(&mut self, amount: usize) {
+        self.reader.consume(amount)
     }
 }

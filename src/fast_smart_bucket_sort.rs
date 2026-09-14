@@ -6,7 +6,7 @@ use std::cell::UnsafeCell;
 use std::cmp::min;
 use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::io::{Read, Write};
+use std::io::{BufRead, Write};
 use std::slice::from_raw_parts_mut;
 use std::sync::atomic::AtomicUsize;
 use unchecked_index::{unchecked_index, UncheckedIndex};
@@ -65,7 +65,7 @@ impl<const LEN: usize> BucketItemSerializer for SortedDataSerializer<LEN> {
     }
 
     #[inline(always)]
-    fn read_from<'a, S: Read>(
+    fn read_from<'a, S: BufRead>(
         &mut self,
         mut stream: S,
         read_buffer: &'a mut Self::ReadBuffer,
