@@ -30,7 +30,17 @@ impl CompressedCheckpointSize {
     }
 }
 
-fn create_lz4_stream<W: Write>(writer: W, level: CompressionLevelInfo) -> lz4::Encoder<W> {
+#[derive(Clone, Copy)]
+pub enum EncoderMemoryUsage {
+    Normal,
+    Low,
+}
+
+fn create_lz4_stream<W: Write>(
+    writer: W,
+    level: CompressionLevelInfo,
+    usage: EncoderMemoryUsage,
+) -> lz4::Encoder<W> {
     let (queue_occupation, queue_size) = GlobalFlush::global_queue_occupation();
 
     let level = if queue_size < 2 * queue_occupation {
@@ -39,13 +49,23 @@ fn create_lz4_stream<W: Write>(writer: W, level: CompressionLevelInfo) -> lz4::E
         level.fast_disk
     };
 
-    lz4::EncoderBuilder::new()
-        .level(level)
-        .checksum(ContentChecksum::NoChecksum)
-        .block_mode(BlockMode::Linked)
-        .block_size(BlockSize::Max64KB)
-        .build(writer)
-        .unwrap()
+    match usage {
+        EncoderMemoryUsage::Normal => lz4::EncoderBuilder::new()
+            .level(level)
+            .checksum(ContentChecksum::NoChecksum)
+            .block_mode(BlockMode::Linked)
+            .block_size(BlockSize::Max64KB)
+            .build(writer)
+            .unwrap(),
+        EncoderMemoryUsage::Low => lz4::EncoderBuilder::new()
+            .level(level)
+            .checksum(ContentChecksum::NoChecksum)
+            .block_mode(BlockMode::Independent)
+            .block_size(BlockSize::Max64KB)
+            .auto_flush(false)
+            .build(writer)
+            .unwrap(),
+    }
 }
 
 struct CompressedBinaryWriterInternal {
@@ -54,6 +74,7 @@ struct CompressedBinaryWriterInternal {
     checkpoints: Vec<CheckpointData>,
     current_chunk_size: u64,
     level: CompressionLevelInfo,
+    memory_usage: EncoderMemoryUsage,
     data_format_info: Vec<u8>,
 
     checkpoint_data: Option<Vec<u8>>,
@@ -92,7 +113,7 @@ impl CompressedBinaryWriterInternal {
                 data: self.checkpoint_data.clone(),
             });
 
-            create_lz4_stream(file_buf, self.level)
+            create_lz4_stream(file_buf, self.level, self.memory_usage)
         });
         self.current_chunk_size = 0;
     }
@@ -114,14 +135,16 @@ impl LockFreeBucket for CompressedBinaryWriter {
         MemoryFileMode,
         CompressedCheckpointSize,
         CompressionLevelInfo,
+        EncoderMemoryUsage,
     );
 
     fn new_serialized_data_format(
         path_prefix: &Path,
-        (file_mode, checkpoint_max_size, compression_level): &(
+        (file_mode, checkpoint_max_size, compression_level, memory_usage): &(
             MemoryFileMode,
             CompressedCheckpointSize,
             CompressionLevelInfo,
+            EncoderMemoryUsage,
         ),
         index: usize,
         data_format_info: &[u8],
@@ -141,7 +164,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
 
         let first_checkpoint = initialize_bucket_file(&mut file);
 
-        let writer = create_lz4_stream(file, *compression_level);
+        let writer = create_lz4_stream(file, *compression_level, *memory_usage);
 
         Self {
             inner: Mutex::new(CompressedBinaryWriterInternal {
@@ -155,6 +178,7 @@ impl LockFreeBucket for CompressedBinaryWriter {
                 level: *compression_level,
                 data_format_info: data_format_info.to_vec(),
                 checkpoint_data: None,
+                memory_usage: *memory_usage,
             }),
             path,
         }
