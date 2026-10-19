@@ -88,7 +88,7 @@ pub fn get_info() -> Result<ProcessStats, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{self, filetime_to_duration};
+    use super::{filetime_to_duration, get_info};
     use std::time::Duration;
     use winapi::shared::minwindef::FILETIME;
 
@@ -105,7 +105,7 @@ mod tests {
         // to get some nonzero number for cpu_time_user
         spin_for_a_bit();
 
-        dbg!(windows::get_info().unwrap());
+        dbg!(get_info().unwrap());
     }
 
     #[test]

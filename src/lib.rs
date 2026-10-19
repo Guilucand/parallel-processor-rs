@@ -22,7 +22,7 @@ pub mod utils;
 
 pub use logging::{set_logger_function, LogLevel};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod simple_process_stats;
 
 pub struct Utils {}

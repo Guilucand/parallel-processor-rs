@@ -192,6 +192,8 @@ pub struct ChunksAllocator {
     buffers_list: Mutex<Vec<(usize, usize)>>,
     chunks_wait_condvar: Condvar,
     chunks: Mutex<Vec<usize>>,
+    // Used only by the allocation limits, enforced only on Linux
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     cleared_chunks: Mutex<Vec<usize>>,
     min_free_chunks: AtomicUsize,
     chunks_total_count: AtomicUsize,
@@ -334,6 +336,11 @@ impl ChunksAllocator {
                 self.chunks.lock().extend(cleared_chunks);
             });
         }
+        // The limits are enforced only on Linux, where MADV_DONTNEED frees the cleared chunks at once
+        // and the measured usage drops. Windows has no madvise and on macOS it is only advisory, so
+        // the usage might not fall and the loop would keep clearing chunks down to the minimum.
+        #[cfg(not(target_os = "linux"))]
+        let _ = alloc_limits;
 
         if self.buffers_list.lock().len() > 0 {
             // Already allocated
