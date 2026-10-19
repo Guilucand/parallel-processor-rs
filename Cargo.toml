@@ -24,7 +24,7 @@ nightly-quirks = "0.1.4"
 
 # Memory tracking
 dashmap = "6.0.1"
-backtrace = "0.3.73"
+backtrace = { version = "0.3.73", optional = true }
 desse = "0.2.1"
 bincode = "2.0.1"
 lz4 = "1.25.0"
@@ -46,11 +46,13 @@ voracious_radix_sort = { version = "1.2.0", features = ["voracious_multithread"]
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3.9", features = ["psapi", "processthreadsapi"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+# Only to check that simple_process_stats reads the same values
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 procfs = "0.18.0"
 
 [features]
 no-stats = []
 memory-guards = []
-track-usage = []
+# Also enables the debug_allocator module
+track-usage = ["dep:backtrace"]
 process-stats = []

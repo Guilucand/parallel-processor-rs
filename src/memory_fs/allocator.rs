@@ -599,12 +599,14 @@ mod tests {
 
     #[test]
     fn allocate_memory() {
-        CHUNKS_ALLOCATOR.initialize(MemoryDataSize::from_gibioctets(8), 22, 0);
+        // 1024 chunks of 64 KiB, fewer with the guard pages of memory-guards
+        CHUNKS_ALLOCATOR.initialize(MemoryDataSize::from_mebioctets(64), 16, 0, None);
         for _ in 0..5 {
+            // Half of them, so that the allocator never runs out and does not need the flush queue
             let mut allocated_chunks: Vec<_> = std::iter::from_fn(move || {
                 Some(CHUNKS_ALLOCATOR.request_chunk(chunk_usage!(TemporarySpace)))
             })
-            .take(1024 * 2)
+            .take(512)
             .collect();
 
             allocated_chunks.par_iter_mut().for_each(|x| {

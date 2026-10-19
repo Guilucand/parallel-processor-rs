@@ -151,7 +151,7 @@ mod tests {
     #[test]
     #[ignore]
     pub fn memory_fs_test() {
-        MemoryFs::init(MemoryDataSize::from_mebioctets(100 * 1024), 1024, 3, 0);
+        MemoryFs::init(MemoryDataSize::from_mebioctets(100 * 1024), 1024, 3, 32768, None);
         let data = (0..3337).map(|x| (x % 256) as u8).collect::<Vec<u8>>();
 
         (0..400).into_par_iter().for_each(|i: u32| {
@@ -164,10 +164,10 @@ mod tests {
                 file.write(data.as_slice()).unwrap();
             }
             drop(file);
-            let mut file2 = FileReader::open(
-                format!("/home/andrea/genome-assembly/test1234/{}.tmp", i),
-                None,
-            )
+            let mut file2 = FileReader::open(format!(
+                "/home/andrea/genome-assembly/test1234/{}.tmp",
+                i
+            ))
             .unwrap();
 
             file2.seek(SeekFrom::Start(17 + 3337 * 12374)).unwrap();
@@ -181,10 +181,10 @@ mod tests {
         (0..400).into_par_iter().for_each(|i: u32| {
             crate::log_info!("Reading file {}", i);
             let mut datar = vec![0; 3337];
-            let mut file = FileReader::open(
-                format!("/home/andrea/genome-assembly/test1234/{}.tmp", i),
-                None,
-            )
+            let mut file = FileReader::open(format!(
+                "/home/andrea/genome-assembly/test1234/{}.tmp",
+                i
+            ))
             .unwrap();
             for _ in 0..(1024 * 64) {
                 file.read_exact(datar.as_mut_slice()).unwrap();

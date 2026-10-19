@@ -533,26 +533,22 @@ mod tests {
         crate::log_info!("Total time 2: {:.2?}", end);
     }
 
-    // #[test]
-    // fn sorting_test() {
-    //     let mut data = vec![DataTypeStruct(0, [0; 32 - 16]); VEC_SIZE];
-    //
-    //     data.par_iter_mut()
-    //         .enumerate()
-    //         .for_each(|(i, x)| *x = DataTypeStruct(rng().gen(), [2; 32 - 16]));
-    //
-    //     crate::log_info!("Started sorting...");
-    //     let start = Instant::now();
-    //     fast_smart_radix_sort::<_, U64SortKey, true>(data.as_mut_slice());
-    //     crate::log_info!("Done sorting => {:.2?}!", start.elapsed());
-    //     assert!(data.is_sorted_by(|a, b| {
-    //         Some(match a.cmp(b) {
-    //             Ordering::Less => Ordering::Less,
-    //             Ordering::Equal => Ordering::Equal,
-    //             Ordering::Greater => {
-    //                 panic!("{:?} > {:?}!", a, b);
-    //             }
-    //         })
-    //     }));
-    // }
+    #[test]
+    fn sorting_test() {
+        const VEC_SIZE: usize = 200_000;
+
+        let mut rng = rng();
+        let mut data: Vec<_> = (0..VEC_SIZE)
+            .map(|_| {
+                let key = ((rng.next_u64() as u128) << 64) | rng.next_u64() as u128;
+                DataTypeStruct(key, [2; 32 - 16])
+            })
+            .collect();
+        // Random 128 bit keys are distinct, so the sorted order is unique
+        let mut expected = data.clone();
+        expected.sort_unstable_by_key(|x| x.0);
+
+        fast_smart_radix_sort::<_, U64SortKey, true>(data.as_mut_slice());
+        assert_eq!(data, expected);
+    }
 }

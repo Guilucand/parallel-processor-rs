@@ -4,24 +4,21 @@
 //! A small library to get memory usage and elapsed CPU time.
 //!
 //! * Supports Windows, Linux and macOS.
-//! * Async interface, uses `tokio::fs` for file operations
 //!
 //! ```rust
-//! use crate::parallel_processor::simple_process_stats::ProcessStats;
+//! use parallel_processor::simple_process_stats::ProcessStats;
 //!
-//! # #[tokio::main]
-//! # async fn main() {
 //! let process_stats = ProcessStats::get().expect("could not get stats for running process");
-//! crate::log_info!("{:?}", process_stats);
+//! println!("{:?}", process_stats);
 //! // ProcessStats {
 //! //     cpu_time_user: 421.875ms,
 //! //     cpu_time_kernel: 102.332ms,
 //! //     memory_usage_bytes: 3420160,
 //! // }
-//! # }
 //! ```
 //!
-//! On Linux, this library reads `/proc/self/stat` and uses the `sysconf` libc function.
+//! On Linux, this library reads `/proc/self/stat`, and the page size and clock ticks from the
+//! auxiliary vector (`getauxval`).
 //!
 //! On Windows, the library uses `GetCurrentProcess` combined with `GetProcessTimes` and `K32GetProcessMemoryInfo`.
 //!

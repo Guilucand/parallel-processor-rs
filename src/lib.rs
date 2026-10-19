@@ -10,6 +10,7 @@ pub const DEFAULT_BINCODE_CONFIG: bincode::config::Configuration = bincode::conf
 #[macro_use]
 pub mod memory_fs;
 pub mod buckets;
+#[cfg(feature = "track-usage")]
 pub mod debug_allocator;
 pub mod execution_manager;
 pub mod fast_smart_bucket_sort;
