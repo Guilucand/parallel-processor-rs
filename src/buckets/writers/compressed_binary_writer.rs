@@ -19,7 +19,7 @@ use super::BucketHeader;
 
 pub const COMPRESSED_BUCKET_MAGIC: &[u8; 16] = b"CPLZ4_INTR_BKT_M";
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct CompressedCheckpointSize(u8);
 impl CompressedCheckpointSize {
     pub const fn new_from_size(size: MemoryDataSize) -> Self {
