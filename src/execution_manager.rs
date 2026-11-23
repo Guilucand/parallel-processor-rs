@@ -102,6 +102,91 @@ mod tests {
         }
     }
 
+    /// A value passed on with `recv_requeue` stays available after the last sender is gone: the
+    /// next receiver gets it instead of taking the channel as closed.
+    #[test]
+    fn a_requeued_value_outlives_its_senders() {
+        use crate::execution_manager::packets_channel::unbounded::packets_channel_unbounded;
+
+        let (sender, receiver) = packets_channel_unbounded::<u32>();
+        sender.send(7);
+        let other = receiver.clone();
+        assert_eq!(other.recv_requeue(|value| Some(*value)), Some(7));
+        drop(sender);
+        assert_eq!(receiver.recv_requeue(|_| None), Some(7));
+        assert_eq!(receiver.recv_requeue(|_| None), None);
+    }
+
+    struct ParallelExecutor;
+
+    struct ParallelParams {
+        started: AtomicUsize,
+        threads: std::sync::Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    }
+
+    const PARALLEL_THREADS: usize = 8;
+
+    impl AsyncExecutor for ParallelExecutor {
+        type InputPacket = usize;
+        type OutputPacket = usize;
+        type GlobalParams = ParallelParams;
+        type InitData = ();
+        const ALLOW_PARALLEL_ADDRESS_EXECUTION: bool = true;
+
+        fn new() -> Self {
+            Self
+        }
+
+        fn executor_main<'a>(
+            &'a mut self,
+            params: &'a Self::GlobalParams,
+            mut receiver: ExecutorReceiver<Self>,
+        ) {
+            use std::sync::atomic::Ordering;
+            use std::time::{Duration, Instant};
+            while let Ok(address) = receiver.obtain_address() {
+                while let Some(packet) = address.receive_packet() {
+                    params
+                        .threads
+                        .lock()
+                        .unwrap()
+                        .insert(std::thread::current().id());
+                    params.started.fetch_add(1, Ordering::Relaxed);
+                    // Each packet is held until every one has started (or a timeout), so all of
+                    // them need a thread of their own.
+                    run_blocking_op(|| {
+                        let start = Instant::now();
+                        while params.started.load(Ordering::Relaxed) < PARALLEL_THREADS
+                            && start.elapsed() < Duration::from_secs(5)
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    });
+                    drop(packet);
+                }
+            }
+        }
+    }
+
+    /// One address allowed to run on many threads, its handle dropped right after its packets
+    /// are sent, and fewer scheduler slots than threads: every thread still gets the address. The
+    /// address used to be pushed back only once the thread holding it had a slot again, and
+    /// threads waking up meanwhile found the queue empty with no sender, and stopped.
+    #[test]
+    fn a_parallel_address_reaches_every_thread() {
+        let scheduler = Scheduler::new(2);
+        let mut pool = ExecThreadPool::<ParallelExecutor>::new(PARALLEL_THREADS, "parallel", false);
+        let params = Arc::new(ParallelParams {
+            started: AtomicUsize::new(0),
+            threads: Default::default(),
+        });
+        let handle = pool.start(scheduler, &params);
+        handle.add_input_data((), 0..PARALLEL_THREADS);
+        drop(handle);
+        pool.join();
+        assert_eq!(params.threads.lock().unwrap().len(), PARALLEL_THREADS);
+    }
+
     #[test]
     #[ignore]
     fn test_executors() {

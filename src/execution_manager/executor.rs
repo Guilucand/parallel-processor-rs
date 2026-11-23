@@ -56,17 +56,17 @@ pub struct ExecutorReceiver<E: AsyncExecutor> {
 
 impl<E: AsyncExecutor> ExecutorReceiver<E> {
     pub fn obtain_address(&mut self) -> Result<ExecutorAddressOperations<E>, ()> {
-        let address_receiver = match self.addresses_receiver.recv() {
+        // An address allowed to run on multiple threads goes back into the queue, for the other
+        // threads, while its packets queue is active. It goes back under the same lock as the pop:
+        // with the addresses' senders all dropped, a thread finding the queue empty while the
+        // address is being passed on would otherwise stop for good.
+        let address_receiver = match self.addresses_receiver.recv_requeue(|address| {
+            (E::ALLOW_PARALLEL_ADDRESS_EXECUTION && address.packets_queue.is_active())
+                .then(|| address.clone())
+        }) {
             Some(value) => value,
             None => return Err(()),
         };
-
-        if E::ALLOW_PARALLEL_ADDRESS_EXECUTION && address_receiver.packets_queue.is_active() {
-            // Reinsert the current address if it is allowed to be run on multiple threads
-            self.addresses_receiver
-                .make_sender()
-                .send(address_receiver.clone());
-        }
 
         Ok(ExecutorAddressOperations {
             address_data: address_receiver,

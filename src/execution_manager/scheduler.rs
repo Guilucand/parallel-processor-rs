@@ -101,7 +101,7 @@ pub fn run_blocking_op<T>(f: impl FnOnce() -> T) -> T {
         guard
             .scheduler
             .current_running
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 if v < guard.scheduler.max_threads {
                     Some(v + 1)
                 } else {

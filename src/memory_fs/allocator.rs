@@ -103,7 +103,7 @@ impl AllocatedChunk {
     pub fn write_bytes_noextend(&self, data: &[u8]) -> Option<u64> {
         let result = self
             .len
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 if value + data.len() <= (1 << self.max_len_log2) {
                     Some(value + data.len())
                 } else {

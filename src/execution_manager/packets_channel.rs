@@ -417,6 +417,52 @@ pub mod unbounded {
         }
     }
 
+    impl<T> PacketsChannelReceiver<UnboundedQueue<T>> {
+        /// Receives a value like [`PacketsChannelReceiver::recv`], and pushes back at the end of
+        /// the queue the value `requeue` gives for it, if any, under the same lock as the pop.
+        ///
+        /// A value passed on from receiver to receiver this way never leaves the queue empty in
+        /// between. With no senders left, a waiting receiver that found the queue empty would take
+        /// the channel as closed and stop for good, while the value was still being passed on.
+        /// The push also happens before this receiver waits for a scheduler slot again, so the
+        /// next receiver can take the value meanwhile.
+        pub fn recv_requeue(&self, requeue: impl Fn(&T) -> Option<T>) -> Option<T> {
+            let channel = &*self.queue;
+            let pop = |queue: &mut VecDeque<T>| {
+                let value = queue.pop_front()?;
+                if let Some(again) = requeue(&value) {
+                    queue.push_back(again);
+                    channel.receivers_waiting.notify_one();
+                }
+                Some(value)
+            };
+
+            let mut queue = channel.queue.lock();
+            let value = if let Some(value) = pop(&mut queue) {
+                drop(queue);
+                Some(value)
+            } else {
+                run_blocking_op(|| loop {
+                    if let Some(value) = pop(&mut queue) {
+                        drop(queue);
+                        return Some(value);
+                    }
+                    if channel
+                        .senders_count
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        == 0
+                    {
+                        drop(queue);
+                        return None;
+                    }
+                    channel.receivers_waiting.wait(&mut queue);
+                })
+            };
+            channel.senders_waiting.notify_one();
+            value
+        }
+    }
+
     pub(crate) type PacketsChannelReceiverUnbounded<T> = PacketsChannelReceiver<UnboundedQueue<T>>;
     pub(crate) type PacketsChannelSenderUnbounded<T> = PacketsChannelSender<UnboundedQueue<T>>;
 
